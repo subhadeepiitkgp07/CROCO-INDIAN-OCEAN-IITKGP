@@ -55,15 +55,11 @@ MODULE p4zlim
    REAL(wp), PUBLIC, ALLOCATABLE, SAVE, DIMENSION(:,:,:)  ::   xnanofer   !: Limitation of Fe uptake by nanophyto
    REAL(wp), PUBLIC, ALLOCATABLE, SAVE, DIMENSION(:,:,:)  ::   xdiatfer   !: Limitation of Fe uptake by diatoms
    REAL(wp), PUBLIC, ALLOCATABLE, SAVE, DIMENSION(:,:,:)  ::   xqfuncfecd, xqfuncfecn
-   REAL(wp), PUBLIC, ALLOCATABLE, SAVE, DIMENSION(:,:,:)  ::   ratchln, ratchld
 
    ! Coefficient for iron limitation following Flynn and Hipkin (1999)
    REAL(wp) ::  xcoef1   = 0.0016  / 55.85  
    REAL(wp) ::  xcoef2   = 1.21E-5 * 14. / 55.85 / 7.3125 * 0.5 * 1.5
    REAL(wp) ::  xcoef3   = 1.15E-4 * 14. / 55.85 / 7.3125 * 0.5 
-
-   REAL(wp), PUBLIC ::  xksi2_3     !:  xksi2**3 
-   REAL(wp)         ::  rlogfactdn
 
    LOGICAL  :: l_dia_nut_lim, l_dia_iron_lim, l_dia_size_lim, l_dia_fracal
 
@@ -94,13 +90,12 @@ CONTAINS
       INTEGER, INTENT(in)  :: Kbb, Kmm      ! time level indices
       !
       INTEGER  ::   ji, jj, jk
-      REAL(wp) ::   zlim1, zlim2, zlim3, zlim4, ztemp
+      REAL(wp) ::   zlim1, zlim2, zlim3, zlim4, zcoef
       REAL(wp) ::   z1_trbdia, z1_trbphy, ztem1, ztem2, zetot1, zetot2
       REAL(wp) ::   zdenom, zratio, zironmin, zbactno3, zbactnh4
       REAL(wp) ::   zconc1d, zconc1dnh4, zconc0n, zconc0nnh4   
       REAL(wp) ::   fananof, fadiatf, znutlim, zfalim
-      REAL(wp) ::   zsizen, zsized, zconcnfe, zconcdfe
-      REAL(wp) ::   ztrn, zlimno3, zlimnh4
+      REAL(wp) ::   znutlimtot, zlimno3, zlimnh4, zbiron
       REAL(wp), ALLOCATABLE, DIMENSION(:,:,:) :: zw3d
       !!---------------------------------------------------------------------
       !
@@ -113,8 +108,7 @@ CONTAINS
          l_dia_fracal   = iom_use( "xfracal" )
       ENDIF
       !
-      sizena(:,:,:) = 1.0                    ;   sizeda(:,:,:) = 1.0
-      logsizen(:,:,:) = LOG( sizen(:,:,:) )  ;   logsized(:,:,:) = LOG(sized(:,:,:) )
+      sizena(:,:,:) = 1.0  ;  sizeda(:,:,:) = 1.0
       !
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
          
@@ -122,136 +116,149 @@ CONTAINS
          ! that increasing biomass is made of generally bigger cells
          ! The allometric relationship is classical.
          !------------------------------------------------
-         z1_trbphy  = 1. / ( tr(ji,jj,jk,jpphy,Kbb) + rtrn )
-         z1_trbdia  = 1. / ( tr(ji,jj,jk,jpdia,Kbb) + rtrn )
-         ztrn       = tr(ji,jj,jk,jpno3,Kbb) + tr(ji,jj,jk,jpnh4,Kbb)
+         z1_trbphy   = 1. / ( tr(ji,jj,jk,jpphy,Kbb) + rtrn )
+         z1_trbdia   = 1. / ( tr(ji,jj,jk,jpdia,Kbb) + rtrn )
 
-         zsizen     = EXP(logsizen(ji,jj,jk)*0.81)
-         zconcnfe   = concnfer * zsizen
-         zconc0n    = concnno3 * zsizen
-         zconc0nnh4 = concnnh4 * zsizen
+         concnfe(ji,jj,jk) = concnfer * sizen(ji,jj,jk)**0.81
+         zconc0n           = concnno3 * sizen(ji,jj,jk)**0.81
+         zconc0nnh4        = concnnh4 * sizen(ji,jj,jk)**0.81
 
-         zsized     = EXP(logsized(ji,jj,jk)*0.81)
-         zconcdfe   = concdfer * zsized
-         zconc1d    = concdno3 * zsized
-         zconc1dnh4 = concdnh4 * zsized
+         concdfe(ji,jj,jk) = concdfer * sized(ji,jj,jk)**0.81 
+         zconc1d           = concdno3 * sized(ji,jj,jk)**0.81 
+         zconc1dnh4        = concdnh4 * sized(ji,jj,jk)**0.81  
 
-         ratchln(ji,jj,jk) = ratchl * EXP( -0.078 * logsizen(ji,jj,jk) )
-         ratchld(ji,jj,jk) = ratchl * EXP( -0.078 * ( rlogfactdn + logsized(ji,jj,jk) ) )
+          ! Computation of the optimal allocation parameters
+          ! Based on the different papers by Pahlow et al., and 
+          ! Smith et al.
+          ! ---------------------------------------------------
 
-         ! Computation of the optimal allocation parameters
-         ! Based on the different papers by Pahlow et al., and 
-         ! Smith et al.
-         ! ---------------------------------------------------
-         ! Nanophytoplankton
-         znutlim    = biron(ji,jj,jk) / zconcnfe
-         fananof    = MAX(0.01, MIN(0.99, 1. / ( SQRT(znutlim) + 1.) ) )
+          ! Nanophytoplankton
+          zbiron = ( 75.0 * ( 1.0 - plig(ji,jj,jk) ) + plig(ji,jj,jk) ) * biron(ji,jj,jk)
+          znutlim = zbiron / concnfe(ji,jj,jk)
+          fananof = MAX(0.01, MIN(0.99, 1. / ( SQRT(znutlim) + 1.) ) )
 
-         ! Diatoms
-         znutlim    = biron(ji,jj,jk) / zconcdfe
-         fadiatf    = MAX(0.01, MIN(0.99, 1. / ( SQRT(znutlim) + 1.) ) )
+          ! Diatoms
+          znutlim = zbiron / concdfe(ji,jj,jk)
+          fadiatf = MAX(0.01, MIN(0.99, 1. / ( SQRT(znutlim) + 1.) ) )
 
           ! Michaelis-Menten Limitation term by nutrients of
           ! heterotrophic bacteria
           ! -------------------------------------------------
-         zlimnh4    = tr(ji,jj,jk,jpnh4,Kbb) / ( concbno3 + tr(ji,jj,jk,jpnh4,Kbb) )
-         zlimno3    = tr(ji,jj,jk,jpno3,Kbb) / ( concbno3 + tr(ji,jj,jk,jpno3,Kbb) )
-         zlim1      = ztrn   / ( concbno3 + ztrn )
-         ztemp      = zlim1  / ( zlimno3 + 5.0 * zlimnh4 + rtrn )
-         zbactnh4   = 5.0 * zlimnh4 * ztemp
-         zbactno3   = zlimno3 * ztemp
-         !
-         zlim2      = tr(ji,jj,jk,jppo4,Kbb) / ( tr(ji,jj,jk,jppo4,Kbb) + concbnh4 )
-         zlim3      = biron(ji,jj,jk) / ( concbfe + biron(ji,jj,jk) )
-         zlim4      = tr(ji,jj,jk,jpdoc,Kbb) / ( xkdoc   + tr(ji,jj,jk,jpdoc,Kbb) )
-
-         ! Xlimbac is used for DOC solubilization whereas xlimbacl
-         ! is used for all the other bacterial-dependent terms
-         ! -------------------------------------------------------
-         xlimbacl(ji,jj,jk) = MIN( zlim1, zlim2, zlim3 )
-         xlimbac (ji,jj,jk) = MIN( zlim1, zlim2, zlim3 ) * zlim4
+          zlimnh4 = tr(ji,jj,jk,jpnh4,Kbb) / ( concbno3 + tr(ji,jj,jk,jpnh4,Kbb) )
+          zlimno3 = tr(ji,jj,jk,jpno3,Kbb) / ( concbno3 + tr(ji,jj,jk,jpno3,Kbb) )
+          znutlimtot = ( tr(ji,jj,jk,jpnh4,Kbb) + tr(ji,jj,jk,jpno3,Kbb) ) &
+             &       / ( concbno3 + tr(ji,jj,jk,jpnh4,Kbb) + tr(ji,jj,jk,jpno3,Kbb) )
+          zbactnh4 = znutlimtot * 5.0 * zlimnh4 / ( zlimno3 + 5.0 * zlimnh4 + rtrn )
+          zbactno3 = znutlimtot * zlimno3 / ( zlimno3 + 5.0 * zlimnh4 + rtrn )
+          !
+          zlim1    = zbactno3 + zbactnh4
+          zlim2    = tr(ji,jj,jk,jppo4,Kbb) / ( tr(ji,jj,jk,jppo4,Kbb) + concbnh4 )
+          zlim3    = tr(ji,jj,jk,jpfer,Kbb) / ( concbfe + tr(ji,jj,jk,jpfer,Kbb) )
+          zlim4    = tr(ji,jj,jk,jpdoc,Kbb) / ( xkdoc   + tr(ji,jj,jk,jpdoc,Kbb) )
+          ! Xlimbac is used for DOC solubilization whereas xlimbacl
+          ! is used for all the other bacterial-dependent terms
+          ! -------------------------------------------------------
+          xlimbacl(ji,jj,jk) = MIN( zlim1, zlim2, zlim3 )
+          xlimbac (ji,jj,jk) = MIN( zlim1, zlim2, zlim3 ) * zlim4
 
           ! Michaelis-Menten Limitation term by nutrients: Nanophyto
           ! Optimal parameterization by Smith and Pahlow series of 
           ! papers is used. Optimal allocation is supposed independant
           ! for all nutrients. 
           ! --------------------------------------------------------
-         ! Limitation of Fe uptake (Quota formalism)
-         zfalim     = (1.-fananof) / fananof
-         xnanofer(ji,jj,jk) = (1. - fananof) * biron(ji,jj,jk) / ( biron(ji,jj,jk) + zfalim * zconcnfe )
 
-         ! Limitation of nanophytoplankton growth
-         zlimnh4    = tr(ji,jj,jk,jpnh4,Kbb) / ( zconc0n + tr(ji,jj,jk,jpnh4,Kbb) )
-         zlimno3    = tr(ji,jj,jk,jpno3,Kbb) / ( zconc0n + tr(ji,jj,jk,jpno3,Kbb) )
-         zlim1      = ztrn / ( zconc0n + ztrn )
-         ztemp      = zlim1  / ( zlimno3 + 5.0 * zlimnh4 + rtrn )
-         xnanonh4(ji,jj,jk) = 5.0 * zlimnh4 * ztemp
-         xnanono3(ji,jj,jk) = zlimno3 * ztemp
-         !
-         zlim2      = tr(ji,jj,jk,jppo4,Kbb) / ( tr(ji,jj,jk,jppo4,Kbb) + zconc0nnh4 )
-         zratio     = tr(ji,jj,jk,jpnfe,Kbb) * z1_trbphy 
+          ! Limitation of Fe uptake (Quota formalism)
+          zfalim = (1.-fananof) / fananof
+          xnanofer(ji,jj,jk) = (1. - fananof) * zbiron / ( zbiron + zfalim * concnfe(ji,jj,jk) )
 
-         ! The minimum iron quota depends on the size of PSU, respiration
-         ! and the reduction of nitrate following the parameterization 
-         ! proposed by Flynn and Hipkin (1999)
-         zironmin   = xcoef1 * tr(ji,jj,jk,jpnch,Kbb) * z1_trbphy + xcoef2 * zlim1 + xcoef3 * xnanono3(ji,jj,jk)
-         xqfuncfecn(ji,jj,jk) = zironmin + qnfelim
-         zlim3      = MAX( 0.,( zratio - zironmin ) / qnfelim )
-         xnanopo4(ji,jj,jk) = zlim2
-         xlimnfe (ji,jj,jk) = MIN( 1., zlim3 )
-         xlimphy (ji,jj,jk) = MIN( zlim1, zlim2, zlim3 )
+          ! Limitation of nanophytoplankton growth
+          zlimnh4 = tr(ji,jj,jk,jpnh4,Kbb) / ( zconc0n + tr(ji,jj,jk,jpnh4,Kbb) )
+          zlimno3 = tr(ji,jj,jk,jpno3,Kbb) / ( zconc0n + tr(ji,jj,jk,jpno3,Kbb) )
+          znutlimtot = ( tr(ji,jj,jk,jpnh4,Kbb) + tr(ji,jj,jk,jpno3,Kbb) ) &
+              &      / ( zconc0n + tr(ji,jj,jk,jpnh4,Kbb) + tr(ji,jj,jk,jpno3,Kbb) )
+          xnanonh4(ji,jj,jk) = znutlimtot * 5.0 * zlimnh4 / ( zlimno3 + 5.0 * zlimnh4 + rtrn )
+          xnanono3(ji,jj,jk) = znutlimtot * zlimno3 / ( zlimno3 + 5.0 * zlimnh4 + rtrn )
+          !
+          zlim1    = xnanono3(ji,jj,jk) + xnanonh4(ji,jj,jk)
+          zlim2    = tr(ji,jj,jk,jppo4,Kbb) / ( tr(ji,jj,jk,jppo4,Kbb) + zconc0nnh4 )
+          zratio   = tr(ji,jj,jk,jpnfe,Kbb) * z1_trbphy 
+
+          ! The minimum iron quota depends on the size of PSU, respiration
+          ! and the reduction of nitrate following the parameterization 
+          ! proposed by Flynn and Hipkin (1999)
+          zironmin = xcoef1 * tr(ji,jj,jk,jpnch,Kbb) * z1_trbphy + xcoef2 * zlim1 + xcoef3 * xnanono3(ji,jj,jk)
+          xqfuncfecn(ji,jj,jk) = zironmin + qnfelim
+          zlim3    = MAX( 0.,( zratio - zironmin ) / qnfelim )
+          xnanopo4(ji,jj,jk) = zlim2
+          xlimnfe (ji,jj,jk) = MIN( 1., zlim3 )
+          xlimphy (ji,jj,jk) = MIN( zlim1, zlim2, zlim3 )
                
-         !   Michaelis-Menten Limitation term by nutrients : Diatoms
-         !   -------------------------------------------------------
-         ! Limitation of Fe uptake (Quota formalism)
-         zfalim     = (1.-fadiatf) / fadiatf
-         xdiatfer(ji,jj,jk) = (1. - fadiatf) * biron(ji,jj,jk) / ( biron(ji,jj,jk) + zfalim * zconcdfe )
+          !   Michaelis-Menten Limitation term by nutrients : Diatoms
+          !   -------------------------------------------------------
+          ! Limitation of Fe uptake (Quota formalism)
+          zfalim = (1.-fadiatf) / fadiatf
+          xdiatfer(ji,jj,jk) = (1. - fadiatf) * zbiron / ( zbiron + zfalim * concdfe(ji,jj,jk) )
 
-         ! Limitation of diatoms growth
-         zlimnh4    = tr(ji,jj,jk,jpnh4,Kbb) / ( zconc1d + tr(ji,jj,jk,jpnh4,Kbb) )
-         zlimno3    = tr(ji,jj,jk,jpno3,Kbb) / ( zconc1d + tr(ji,jj,jk,jpno3,Kbb) )
-         zlim1      = ztrn   / ( zconc1d + ztrn )
-         ztemp      = zlim1  / ( zlimno3 + 5.0 * zlimnh4 + rtrn )
-         xdiatnh4(ji,jj,jk) = 5.0 * zlimnh4 * ztemp
-         xdiatno3(ji,jj,jk) = zlimno3 * ztemp
-         !
-         zlim2      = tr(ji,jj,jk,jppo4,Kbb) / ( tr(ji,jj,jk,jppo4,Kbb) + zconc1dnh4  )
-         zlim3      = tr(ji,jj,jk,jpsil,Kbb) &
-                   &  / ( tr(ji,jj,jk,jpsil,Kbb) + xksi(ji,jj) + rtrn )
-         zratio     = tr(ji,jj,jk,jpdfe,Kbb) * z1_trbdia
+          ! Limitation of diatoms growth
+          zlimnh4 = tr(ji,jj,jk,jpnh4,Kbb) / ( zconc1d + tr(ji,jj,jk,jpnh4,Kbb) )
+          zlimno3 = tr(ji,jj,jk,jpno3,Kbb) / ( zconc1d + tr(ji,jj,jk,jpno3,Kbb) )
+          znutlimtot = ( tr(ji,jj,jk,jpnh4,Kbb) + tr(ji,jj,jk,jpno3,Kbb) ) &
+              &     / ( zconc1d + tr(ji,jj,jk,jpnh4,Kbb) + tr(ji,jj,jk,jpno3,Kbb) )
+          xdiatnh4(ji,jj,jk) = znutlimtot * 5.0 * zlimnh4 / ( zlimno3 + 5.0 * zlimnh4 + rtrn ) 
+          xdiatno3(ji,jj,jk) = znutlimtot * zlimno3 / ( zlimno3 + 5.0 * zlimnh4 + rtrn )
+          !
+          zlim1    = xdiatno3(ji,jj,jk) + xdiatnh4(ji,jj,jk)
+          zlim2    = tr(ji,jj,jk,jppo4,Kbb) / ( tr(ji,jj,jk,jppo4,Kbb) + zconc1dnh4  )
+          zlim3    = tr(ji,jj,jk,jpsil,Kbb) &
+               &   / ( tr(ji,jj,jk,jpsil,Kbb) + xksi(ji,jj) + rtrn )
+          zratio   = tr(ji,jj,jk,jpdfe,Kbb) * z1_trbdia
 
-         ! The minimum iron quota depends on the size of PSU, respiration
-         ! and the reduction of nitrate following the parameterization 
-         ! proposed by Flynn and Hipkin (1999)
-         zironmin   = xcoef1 * tr(ji,jj,jk,jpdch,Kbb) * z1_trbdia + xcoef2 * zlim1 + xcoef3 * xdiatno3(ji,jj,jk)
-         xqfuncfecd(ji,jj,jk) = zironmin + qdfelim
-         zlim4      = MAX( 0., ( zratio - zironmin ) / qdfelim )
-         xdiatpo4(ji,jj,jk) = zlim2
-         xlimdfe (ji,jj,jk) = MIN( 1., zlim4 )
-         xlimdia (ji,jj,jk) = MIN( zlim1, zlim2, zlim3, zlim4 )
-         xlimsi  (ji,jj,jk) = MIN( zlim1, zlim2, zlim4 )
+          ! The minimum iron quota depends on the size of PSU, respiration
+          ! and the reduction of nitrate following the parameterization 
+          ! proposed by Flynn and Hipkin (1999)
+          zironmin = xcoef1 * tr(ji,jj,jk,jpdch,Kbb) * z1_trbdia + xcoef2 * zlim1 + xcoef3 * xdiatno3(ji,jj,jk)
+          xqfuncfecd(ji,jj,jk) = zironmin + qdfelim
+          zlim4    = MAX( 0., ( zratio - zironmin ) / qdfelim )
+          xdiatpo4(ji,jj,jk) = zlim2
+          xlimdfe (ji,jj,jk) = MIN( 1., zlim4 )
+          xlimdia (ji,jj,jk) = MIN( zlim1, zlim2, zlim3, zlim4 )
+          xlimsi  (ji,jj,jk) = MIN( zlim1, zlim2, zlim4 )
       END_3D
+
+
+      ! Size estimation of phytoplankton based on total biomass
+      ! Assumes that larger biomass implies addition of larger cells
+      ! ------------------------------------------------------------
+      DO_3D( 0, 0, 0, 0, 1, jpkm1)
+         zcoef = tr(ji,jj,jk,jpphy,Kbb) - MIN(xsizephy, tr(ji,jj,jk,jpphy,Kbb) )
+         sizena(ji,jj,jk) = 1. + ( xsizern -1.0 ) * zcoef / ( xsizephy + zcoef )
+         zcoef = tr(ji,jj,jk,jpdia,Kbb) - MIN(xsizedia, tr(ji,jj,jk,jpdia,Kbb) )
+         sizeda(ji,jj,jk) = 1. + ( xsizerd - 1.0 ) * zcoef / ( xsizedia + zcoef )
+      END_3D
+
 
       ! Compute the fraction of nanophytoplankton that is made of calcifiers
       ! This is a purely adhoc formulation described in Aumont et al. (2015)
       ! This fraction depends on nutrient limitation, light, temperature
       ! --------------------------------------------------------------------
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
-         ztem1  = MAX( 0., ts(ji,jj,jk,jp_tem,itt) + 1.8)
+         zlim1  = xnanonh4(ji,jj,jk) + xnanono3(ji,jj,jk) 
+         zlim2  = tr(ji,jj,jk,jppo4,Kbb) / ( tr(ji,jj,jk,jppo4,Kbb) + concnnh4 )
+         zlim3  = tr(ji,jj,jk,jpfer,Kbb) / ( tr(ji,jj,jk,jpfer,Kbb) +  6.E-11   )
+         ztem1  = MAX( 0., ts(ji,jj,jk,jp_tem,Kmm) + 1.8)
          ztem2  = ts(ji,jj,jk,jp_tem,Kmm) - 10.
          zetot1 = MAX( 0., etot_ndcy(ji,jj,jk) - 1.) / ( 4. + etot_ndcy(ji,jj,jk) ) 
          zetot2 = 30. / ( 30.0 + etot_ndcy(ji,jj,jk) )
 
-         xfracal(ji,jj,jk) = caco3r * xlimphy(ji,jj,jk)                             &
-           &                        * ztem1 / ( 0.1 + ztem1 )                       &
-           &                        * MAX( 1., tr(ji,jj,jk,jpphy,Kbb) / xsizephy )  &
-           &                        * zetot1 * zetot2                               &
-           &                        * ( 1. + EXP(-ztem2 * ztem2 / 25. ) )           &
-           &                        * MIN( 1., 50. / ( hmld(ji,jj) + rtrn ) )
+         xfracal(ji,jj,jk) = caco3r * MIN( zlim1, zlim2, zlim3 )                  &
+            &                       * ztem1 / ( 0.1 + ztem1 )                     &
+            &                       * MAX( 1., tr(ji,jj,jk,jpphy,Kbb) / xsizephy )  &
+            &                       * zetot1 * zetot2               &
+            &                       * ( 1. + EXP(-ztem2 * ztem2 / 25. ) )         &
+            &                       * MIN( 1., 50. / ( hmld(ji,jj) + rtrn ) )
          xfracal(ji,jj,jk) = MIN( 0.8 , xfracal(ji,jj,jk) )
          xfracal(ji,jj,jk) = MAX( 0.02, xfracal(ji,jj,jk) )
       END_3D
-
       !
       IF( lk_iomput .AND. knt == nrdttrc ) THEN        ! save output diagnostics
         !
@@ -366,10 +373,6 @@ CONTAINS
          WRITE(numout,*) '      Optimal Fe quota for diatoms             qdfelim   = ', qdfelim
       ENDIF
       !
-      rlogfactdn = log(6.0/1.67)
-      !
-      xksi2_3 = xksi2 * xksi2 * xksi2
-      !
       xfracal (:,:,jpk) = 0._wp
       xlimphy (:,:,jpk) = 0._wp    ;      xlimdia (:,:,jpk) = 0._wp
       xlimnfe (:,:,jpk) = 0._wp    ;      xlimdfe (:,:,jpk) = 0._wp
@@ -404,7 +407,6 @@ CONTAINS
          &      xlimdia (A2D(0),jpk), xlimdfe (A2D(0),jpk),       &
          &      concnfe (A2D(0),jpk), concdfe (A2D(0),jpk),       &
          &      xqfuncfecn(A2D(0),jpk), xqfuncfecd(A2D(0),jpk),   &
-         &      ratchln (A2D(0),jpk), ratchld (A2D(0),jpk),       &
          &      xlimsi  (A2D(0),jpk), STAT=p4z_lim_alloc )
       !
       IF( p4z_lim_alloc /= 0 ) CALL ctl_stop( 'STOP', 'p4z_lim_alloc : failed to allocate arrays.' )

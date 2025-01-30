@@ -11,7 +11,8 @@ MODULE p4zflx
    !!            1.0  !  2004     (O. Aumont) modifications
    !!            2.0  !  2007-12  (C. Ethe, G. Madec)  F90
    !!                 !  2011-02  (J. Simeon, J. Orr) Include total atm P correction 
-   !!             4.2  !  2020     (J. ORR )  rhop is replaced by "in situ density" rhd
+   !!            4.2  !  2020     (J. ORR )  rhop is replaced by "in situ density" rhd
+   !!            3.*  !  2025-02  (S. Maishal, R. Person) MPI and optimization
 #if defined key_pisces   
    !!----------------------------------------------------------------------
    !!   p4z_flx       :   CALCULATES GAS EXCHANGE AND CHEMISTRY AT SEA SURFACE
@@ -32,8 +33,8 @@ MODULE p4zflx
    PUBLIC   p4z_flx_init  
    PUBLIC   p4z_flx_alloc  
 
-   !                                 !!** Namelist  nampisext  **
-   REAL(wp)          ::   atcco2      !: pre-industrial atmospheric [co2] (ppm) 	
+   !                                  !! ** Namelist  nampisext  **
+   REAL(wp)          ::   atcco2      !: pre-industrial atmospheric [co2] (ppm) 
    LOGICAL           ::   ln_co2int   !: flag to read in a file and interpolate atmospheric pco2 or not
    CHARACTER(len=34) ::   clname      !: filename of pco2 values
    INTEGER           ::   nn_offset   !: Offset model-data start year (default = 0) 
@@ -42,7 +43,7 @@ MODULE p4zflx
    INTEGER                                   ::   nmaxrec, numco2   !
    REAL(wp), ALLOCATABLE, SAVE, DIMENSION(:) ::   atcco2h, years    !
 
-   !                                  !!* nampisatm namelist (Atmospheric PRessure) *
+   !                                   !!* nampisatm namelist (Atmospheric PRessure) *
    LOGICAL, PUBLIC ::   ln_presatm     !: ref. pressure: global mean Patm (F) or a constant (F)
    LOGICAL, PUBLIC ::   ln_presatmco2  !: accounting for spatial atm CO2 in the compuation of carbon flux (T) or not (F)
 
@@ -99,11 +100,11 @@ CONTAINS
       IF( ln_timing )   CALL timing_start('p4z_flx')
       !
       IF( kt == nittrc000 )  THEN
-         l_dia_cflx  = iom_use( "Cflx"    ) .OR. iom_use( "Dpco2" )  &
+         l_dia_cflx  = iom_use( "Cflx" ) .OR. iom_use( "Dpco2" ) &
             &     .OR. iom_use( "pCO2sea" ) .OR. iom_use( "AtmCo2" )
-         l_dia_oflx  = iom_use( "Oflx"    ) .OR. iom_use( "Dpo2" )  
-         l_dia_tcflx = iom_use( "tcflx"   ) .OR. iom_use( "tcflxcum" )
-         l_dia_kg    = iom_use( "Kg"   ) 
+         l_dia_oflx  = iom_use( "Oflx" ) .OR. iom_use( "Dpo2" )  
+         l_dia_tcflx = iom_use( "tcflx" ) .OR. iom_use( "tcflxcum" )
+         l_dia_kg    = iom_use( "Kg" ) 
       ENDIF
       
       ! SURFACE CHEMISTRY (PCO2 AND [H+] IN
@@ -132,22 +133,29 @@ CONTAINS
          END_2D
       ENDIF
 
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, zrhd, zdic, zph) &
+      !$OMP SHARED(rhd, tr, hi, rtrn, ak13, ak23, zh2co3)
       DO_2D( 0, 0, 0, 0 )
-         ! DUMMY VARIABLES FOR DIC, H+, AND BORATE
+         ! (DUMMY) VARIABLES FOR DIC, H+, AND BORATE
          zrhd = rhd(ji,jj,1) + 1._wp
          zdic  = tr(ji,jj,1,jpdic,Kbb)
          zph   = MAX( hi(ji,jj,1), 1.e-10 ) / ( zrhd + rtrn )
          ! CALCULATE [H2CO3]
          zh2co3(ji,jj) = zdic/(1. + ak13(ji,jj,1)/zph + ak13(ji,jj,1)*ak23(ji,jj,1)/zph**2)
       END_2D
+      !$OMP END PARALLEL DO
 
       ! --------------
       ! COMPUTE FLUXES
       ! --------------
 
       ! FIRST COMPUTE GAS EXCHANGE COEFFICIENTS
-      ! -------------------------------------------
+      ! ---------------------------------------
 
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, ztc, ztc2, ztc3, ztc4, zsch_co2, zsch_o2, zws, zkgwan) &
+      !$OMP SHARED(ts, jp_tem, Kmm, wndm, fr_i, tmask, xconv, zkgco2, zkgo2)
       DO_2D( 0, 0, 0, 0 )
          ztc  = MIN( 35., ts(ji,jj,1,jp_tem,Kmm) )
          ztc2 = ztc * ztc
@@ -166,21 +174,26 @@ CONTAINS
          zkgco2(ji,jj) = zkgwan * SQRT( 660./ zsch_co2 )
          zkgo2 (ji,jj) = zkgwan * SQRT( 660./ zsch_o2 )
       END_2D
+      !$OMP END PARALLEL DO
 
-
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, ztkel, zsal, zvapsw, zpco2atm, zxc2, zfugcoeff, &
+                      zfco2, zfld, zflu, zpco2oce, oce_co2, zfld16, zflu16) &
+      !$OMP SHARED(tempis, salinprac, tmask, satmco2, patm, chemc, zkgco2, &
+                   zh2co3, rtrn, rfact2, e3t, tr, jpoxy, Krhs, jpfer)
       DO_2D( 0, 0, 0, 0 )
          ztkel = tempis(ji,jj,1) + 273.15
          zsal  = salinprac(ji,jj,1) + ( 1.- tmask(ji,jj,1) ) * 35.
          zvapsw    = EXP(24.4543 - 67.4509*(100.0/ztkel) - 4.8489*LOG(ztkel/100) - 0.000544*zsal)
          zpco2atm(ji,jj) = satmco2(ji,jj) * ( patm(ji,jj) - zvapsw )
          zxc2      = ( 1.0 - zpco2atm(ji,jj) * 1E-6 )**2
-         zfugcoeff = EXP( patm(ji,jj) * (chemc(ji,jj,2) + 2.0 * zxc2 * chemc(ji,jj,3) )   &
+         zfugcoeff = EXP( patm(ji,jj) * (chemc(ji,jj,2) + 2.0 * zxc2 * chemc(ji,jj,3) ) &
          &           / ( 82.05736 * ztkel ))
          zfco2 = zpco2atm(ji,jj) * zfugcoeff
 
-         ! Compute CO2 flux for the sea and air
+         ! Compute CO2 flux for the air-sea
          zfld = zfco2 * chemc(ji,jj,1) * zkgco2(ji,jj)  ! (mol/L) * (m/s)
-         zflu = zh2co3(ji,jj) * zkgco2(ji,jj)                                   ! (mol/L) (m/s) ?
+         zflu = zh2co3(ji,jj) * zkgco2(ji,jj)                                   ! (mol/L) (m/s)
          zpco2oce(ji,jj) = zh2co3(ji,jj) / ( chemc(ji,jj,1) * zfugcoeff + rtrn )
          oce_co2(ji,jj)  = ( zfld - zflu ) * tmask(ji,jj,1) 
          ! compute the trend
@@ -188,20 +201,21 @@ CONTAINS
                  &         + oce_co2(ji,jj) * rfact2 / e3t(ji,jj,1,Kmm)
 
          ! Compute O2 flux 
-         zfld16 = patm(ji,jj) * chemo2(ji,jj,1) * zkgo2(ji,jj)          ! (mol/L) * (m/s)
+         zfld16 = patm(ji,jj) * chemo2(ji,jj,1) * zkgo2(ji,jj)          ! (mol/L)  (m/s)
          zflu16 = tr(ji,jj,1,jpoxy,Kbb) * zkgo2(ji,jj)
          zoflx(ji,jj) = ( zfld16 - zflu16 ) * tmask(ji,jj,1)
          tr(ji,jj,1,jpoxy,Krhs) = tr(ji,jj,1,jpoxy,Krhs) &
                  &        + zoflx(ji,jj) * rfact2 / e3t(ji,jj,1,Kmm)
       END_2D
+      !$OMP END PARALLEL DO
 
       IF( l_dia_tcflx .OR. kt == nitrst )  THEN
          ALLOCATE( zw2d(A2D(0)) )
          zw2d(A2D(0)) = oce_co2(A2D(0)) * e1e2t(A2D(0)) * 1000._wp
-         t_oce_co2_flx  = glob_sum( 'p4zflx',  zw2d(:,:) )                    !  Total Flux of Carbon
+         t_oce_co2_flx  = glob_sum( 'p4zflx',  zw2d(:,:) )           !  Total Flux of Carbon
          t_oce_co2_flx_cum = t_oce_co2_flx_cum + t_oce_co2_flx       !  Cumulative Total Flux of Carbon
-!        t_atm_co2_flx     = glob_sum( 'p4zflx', satmco2(:,:) * e1e2t(:,:) )       ! Total atmospheric pCO2
-         t_atm_co2_flx     =  atcco2      ! Total atmospheric pCO2
+!        t_atm_co2_flx     = glob_sum( 'p4zflx', satmco2(:,:) * e1e2t(:,:) )  ! Total atmospheric pCO2
+         t_atm_co2_flx     =  atcco2                                          ! Total atmospheric pCO2
          DEALLOCATE( zw2d )
       ENDIF
      
@@ -238,10 +252,14 @@ CONTAINS
            zw2d(A2D(0)) = zoflx(A2D(0)) * 1000._wp
            CALL iom_put( "Oflx", zw2d )
            !  Dpo2 
+           !$OMP PARALLEL DO &
+           !$OMP PRIVATE(ji, jj) &
+           !$OMP SHARED(atcox, patm, tr, jpoxy, Kbb, chemo2, rtrn, tmask, zw2d)
            DO_2D( 0, 0, 0, 0 )
               zw2d(ji,jj) =  ( atcox * patm(ji,jj) - atcox * tr(ji,jj,1,jpoxy,Kbb) &
                             / ( chemo2(ji,jj,1) + rtrn ) ) * tmask(ji,jj,1) 
            END_2D
+           !$OMP END PARALLEL DO
            CALL iom_put( "Dpo2", zw2d )
            DEALLOCATE( zw2d )
         ENDIF
@@ -260,13 +278,17 @@ CONTAINS
       ENDIF
       !
 #if defined key_trc_diaadd
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj) &
+      !$OMP SHARED(oce_co2, zoflx, zkgco2, tmask, zpco2atm, zpco2oce, trc2d)
       DO_2D( 0, 0, 0, 0 )
          trc2d(ji,jj,jp_flxco2) = oce_co2(ji,jj) * 1000.  !  carbon flux
          trc2d(ji,jj,jp_flxo2 ) = zoflx(ji,jj)  * 1000.   !  O2 flux
-         trc2d(ji,jj,jp_kgco2 ) = zkgco2(ji,jj) * tmask(ji,jj,1)           !  gas exchange for CO2
+         trc2d(ji,jj,jp_kgco2 ) = zkgco2(ji,jj) * tmask(ji,jj,1)              !  gas exchange for CO2
          trc2d(ji,jj,jp_dpco2 ) = ( zpco2atm(ji,jj) - zpco2oce(ji,jj) ) * tmask(ji,jj,1) ! delta pco2
       END_2D
-#endif      
+      !$OMP END PARALLEL DO
+#endif
       IF( ln_timing )   CALL timing_stop('p4z_flx')
       !
    END SUBROUTINE p4z_flx
@@ -355,6 +377,7 @@ CONTAINS
       !
       INTEGER            ::   ierr, ios   ! Local integer
       CHARACTER(len=100) ::   cn_dir      ! Root directory for location of ssr files
+! Need to check from RP
 # ifdef NEMO
       TYPE(FLD_N)        ::   sn_patm     ! informations about the fields to be read
       TYPE(FLD_N)        ::   sn_atmco2   ! informations about the fields to be read
@@ -364,6 +387,7 @@ CONTAINS
       !!
       !!----------------------------------------------------------------------
       !
+ ! Need to check from RP
 # ifdef NEMO
       IF( kt == nit000 ) THEN    !==  First call kt=nittrc000  ==!
          !

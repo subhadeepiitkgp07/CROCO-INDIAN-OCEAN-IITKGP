@@ -8,7 +8,8 @@ MODULE p4zdiaz
    !!=========================================================================
    !! History :   1.0  !  2004     (O. Aumont) Original code
    !!             2.0  !  2007-12  (C. Ethe, G. Madec)  F90
-   !!             5.0  !  2023-12  (O. Aumont, C. Ethe) 
+   !!             5.0  !  2023-12  (O. Aumont, C. Ethe)
+   !!             3.*  !  2025-02  (S. Maishal, R. Person) MPI and optimization
 #if defined key_pisces
    !!----------------------------------------------------------------------
    !!   p4z_rem       :  Compute remineralization/dissolution of organic compounds
@@ -85,6 +86,12 @@ CONTAINS
       IF( kt == nittrc000 )  l_dia_nfix   = iom_use( "Nfix" ) .OR. iom_use( "Nfixo2" )
 
       ! Nitrogen fixation process
+      !$OMP PARALLEL DO & 
+      !$OMP PRIVATE(ji, jj, jk, zlight, ztemp, zmudia, zdiano3, zdianh4, &
+                                    zlim, zfact, ztrfer, ztrpo4, ztrdop) &
+      !$OMP SHARED(etot_ndcy, diazolight, fr_i, ts, rno3, tr, jpno3, jpnh4, &
+                   jppo4, jpdop, biron, concnno3, concnnh4, concfediaz, &
+                   nitrpot, rfact2, r1_rday, rtrn, ln_p2z, ln_p5z)
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
          !                      ! Potential nitrogen fixation dependant on temperature and iron
          zlight  =  ( 1.- EXP( -etot_ndcy(ji,jj,jk) / diazolight ) ) &
@@ -118,10 +125,17 @@ CONTAINS
             nitrpot(ji,jj,jk) =  zmudia * r1_rday * zfact * MIN( ztrfer, ztrpo4 ) * zlight
          ENDIF
       END_3D
+      !$OMP END PARALLEL DO
       !
-      ! Nitrogen change due to nitrogen fixation
-      ! ----------------------------------------
+      !------------------------------------------
+      ! Nitrogen change due to nitrogen fixation 
+      ! -----------------------------------------
       IF( ln_p2z ) THEN
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, jk, zfact, zlight, zsoufer) &
+         !$OMP SHARED(nitrpot, nitrfix, etot_ndcy, diazolight, fr_i, biron, &
+                      tr, jpno3, jptal, jpdic, jpdoc, jppoc, jpfer, jpoxy, &
+                      Krhs, rno3, o2ut, o2nit, feratz, rfact2, rday)
          DO_3D( 0, 0, 0, 0, 1, jpkm1)
             zfact = nitrpot(ji,jj,jk) * nitrfix
             zlight  =  ( 1.- EXP( -etot_ndcy(ji,jj,jk) / diazolight ) ) &
@@ -138,7 +152,14 @@ CONTAINS
             tr(ji,jj,jk,jpfer,Krhs) = tr(ji,jj,jk,jpfer,Krhs) &
                     &                + 0.005 * 4E-10 * zsoufer * rfact2 / rday
          END_3D
+         !$OMP END PARALLEL DO
       ELSE
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, jk, zfact, zlight, zsoufer) &
+         !$OMP SHARED(nitrpot, nitrfix, etot_ndcy, diazolight, &
+                      fr_i, biron, tr, jpnh4, jptal, jpdic, jpdoc, &
+                      jppoc, jpgoc, jpoxy, jpfer, jpsfe, jpbfe, Krhs, &
+                      rno3, o2ut, o2nit, rfact2, rday)
          DO_3D( 0, 0, 0, 0, 1, jpkm1)
             zfact = nitrpot(ji,jj,jk) * nitrfix
             zlight  =  ( 1.- EXP( -etot_ndcy(ji,jj,jk) / diazolight ) ) &
@@ -164,9 +185,14 @@ CONTAINS
             tr(ji,jj,jk,jpfer,Krhs) = tr(ji,jj,jk,jpfer,Krhs) &
                     &                + 0.003 * 4E-10 * zsoufer * rfact2 / rday
          END_3D
+         !$OMP END PARALLEL DO
       ENDIF
       !
       IF( ln_p4z ) THEN
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, jk, zfact) &
+         !$OMP SHARED(nitrpot, nitrfix, tr, jppo4, jpdoc, &
+                      Kbb, Krhs, concdnh4, xstep)
          DO_3D( 0, 0, 0, 0, 1, jpkm1)
             zfact = nitrpot(ji,jj,jk) * nitrfix
             tr(ji,jj,jk,jppo4,Krhs) = tr(ji,jj,jk,jppo4,Krhs) - zfact * 2.0 / 3.0
@@ -174,9 +200,14 @@ CONTAINS
                  &                  / ( concdnh4 + tr(ji,jj,jk,jppo4,Kbb) ) &
                  &                    * 0.001 * tr(ji,jj,jk,jpdoc,Kbb) * xstep
          END_3D
+         !$OMP END PARALLEL DO
       ENDIF
       !
       IF( ln_p5z ) THEN
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, jk, ztrpo4, ztrdop, zratpo4, zfact) &
+         !$OMP SHARED(nitrpot, nitrfix, tr, jppo4, jpdon, jpdop, &
+                      jppon, jppop, jpgon, jpgop, Krhs, Kbb, rtrn)
          DO_3D( 0, 0, 0, 0, 1, jpkm1)
             ztrpo4  = tr(ji,jj,jk,jppo4,Kbb) &
               &      / ( 1E-6 + tr(ji,jj,jk,jppo4,Kbb) )
@@ -200,6 +231,7 @@ CONTAINS
             tr(ji,jj,jk,jpgop,Krhs) = tr(ji,jj,jk,jpgop,Krhs) &
             &                       + 16.0 / 46.0 * zfact * 1.0 / 3.0 * 1.0 /3.0
          END_3D
+         !$OMP END PARALLEL DO
       ENDIF
          
       IF(sn_cfctl%l_prttrc)   THEN  ! print mean trends (used for debugging)
@@ -211,9 +243,13 @@ CONTAINS
       IF( l_dia_nfix .AND. lk_iomput .AND. knt == nrdttrc ) THEN 
          ALLOCATE( zw3d(GLOBAL_2D_ARRAY,jpk) )  ;  zw3d(:,:,:) = 0._wp
          zfact = rno3 * 1.e+3 * rfact2r !  conversion from molC/l/kt  to molN/m3/s
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, jkR, zfact) &
+         !$OMP SHARED(nitrpot, zw3d, tmask)
          DO_3D( 0, 0, 0, 0, 1, jpk )
             zw3d(ji,jj,jkR) =  nitrpot(ji,jj,jk) * zfact * tmask(ji,jj,jk)
          END_3D
+         !$OMP END PARALLEL DO
          CALL iom_put( "Nfix", zw3d ) ! diazotrophy
          CALL iom_put( "Nfixo2", zw3d * o2nit) ! O2 production by diazotrophy
          DEALLOCATE( zw3d ) 
@@ -224,16 +260,25 @@ CONTAINS
       DO_2D( 0, 0, 0, 0 )
         trc2d(ji,jj,jp_nfix) = 0.
       END_2D
+      !
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, zfact) &
+      !$OMP SHARED(trc2d, nitrpot, nitrfix, rno3, e3t, tmask, jp_nfix)
       DO_3D( 0, 0, 0, 0, 1, jpk )
          trc2d(ji,jj,jp_nfix) = trc2d(ji,jj,jp_nfix ) &
             &                 +  nitrpot(ji,jj,jk) * nitrfix * rno3    &
             &                 * zfact * e3t(ji,jj,jk,Kmm) * tmask(ji,jj,jk) ! nitrogen fixation at surface
       END_3D
+      !$OMP END PARALLEL DO
       !
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, zfact) &
+      !$OMP SHARED(trc3d, nitrpot, nitrfix, rno3, o2nit, tmask, jp_nfixo2)
       DO_3D( 0, 0, 0, 0, 1, jpk )
          trc3d(ji,jj,jkR,jp_nfixo2 ) = nitrpot(ji,jj,jk) * nitrfix * rno3 &
            &                      * zfact * o2nit * tmask(ji,jj,jk)  ! O2 production by Nfix
       END_3D
+      !$OMP END PARALLEL DO
 # endif
       !
       IF( ln_timing )   CALL timing_stop('p4z_diaz')

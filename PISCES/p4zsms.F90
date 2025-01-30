@@ -44,7 +44,6 @@ MODULE p4zsms
 
    INTEGER  ::  rstph, rstfe, rstszn, rstszd, rstszp
    INTEGER  ::  rstthet, rstxksi, rstxksim, rstpisstep
-   INTEGER  ::  rstpoc, rstgoc
 
    !! * Substitutions
 #  include "ocean2pisces.h90"   
@@ -74,9 +73,7 @@ CONTAINS
       INTEGER, INTENT( in ) ::   kt              ! ocean time-step index      
       INTEGER, INTENT( in ) ::   Kbb, Kmm, Krhs  ! time level index
       !!
-      INTEGER ::   ji, jj, jk, jnt, jn, jl, ilc, ikty
-      LOGICAL :: ll_dmp
-
+      INTEGER ::   ji, jj, jk, jnt, jn, jl, ilc
       REAL(wp) ::  ztra
       CHARACTER (len=25) :: charout
       REAL(wp), ALLOCATABLE, DIMENSION(:,:    ) :: zw2d
@@ -104,11 +101,8 @@ CONTAINS
         !
       ENDIF
       !
-      ll_dmp  = ( ln_pisdmp .OR. ln_pisdmp_alk ) .AND. ( ln_rsttr .OR. kt /= 1 ) 
-      ikty = nyear_len(1) * rday / NINT(rn_Dt)    ! time-step at the end of a year 
-      ll_dmp = ll_dmp .AND.  MOD( kt-1, ikty ) == 0 
       !
-      IF( ll_dmp )    CALL p4z_dmp( kt, Kbb, Kmm )      ! Relaxation of some tracers
+      IF( ln_pisdmp .AND. MOD( kt - 1, nn_pisdmp ) == 0 )   CALL p4z_dmp( kt, Kbb, Kmm )      ! Relaxation of some tracers
       !
       rfact = rDt_trc  ! time step of PISCES
       !
@@ -304,7 +298,7 @@ CONTAINS
       NAMELIST/nampisbio/ nrdttrc, wsbio, xkmort, feratz, feratm, wsbio2, wsbio2max,    &
          &                wsbio2scale, ldocp, ldocz, lthet, no3rat3, po4rat3
          !
-      NAMELIST/nampisdmp/ ln_pisdmp, ln_pisdmp_alk
+      NAMELIST/nampisdmp/ ln_pisdmp, nn_pisdmp
 #if ! defined NEMO               
       NAMELIST/nampisdbg/ ln_bio, ln_lys, ln_sed, ln_flx, ln_sink, &
          &                ln_fechem, ln_micro, ln_meso, ln_mort, &
@@ -351,14 +345,13 @@ CONTAINS
       READ_NML_CFG(numnatp,nampisdmp)
       IF(lwm) WRITE( numonp, nampisdmp )
       !
-      ln_pisdmp     = .FALSE.
-      ln_pisdmp_alk = .FALSE.
-      !
+      ln_pisdmp = .FALSE.
       IF(lwp) THEN                         ! control print
          WRITE(numout,*)
          WRITE(numout,*) '   Namelist : nampisdmp --- relaxation to GLODAP'
          WRITE(numout,*) '      Relaxation of tracer to glodap mean value   ln_pisdmp =', ln_pisdmp
-         WRITE(numout,*) '      Relaxation of alkalinity to glodap mean value   ln_pisdmp_alk  =', ln_pisdmp_alk
+         WRITE(numout,*) '      Frequency of Relaxation                     nn_pisdmp =', nn_pisdmp
+         WRITE(numout,*) ' '
       ENDIF
       !
 #if ! defined NEMO               
@@ -444,17 +437,6 @@ CONTAINS
             consfe3(:,:,:) = 0._wp
          ENDIF
 
-        ! Read mean remineralisation rate
-         ll_poc_lab = .FALSE.
-         IF( iom_varid( numrtr, 'remintpoc', ldstop = .FALSE. ) > 0 ) THEN
-            CALL iom_get( numrtr, jpdom_auto, 'remintpoc' , remintpoc(:,:,:)  )
-            IF( ln_p4z .OR. ln_p5z ) &
-            CALL iom_get( numrtr, jpdom_auto, 'remintgoc' , remintgoc(:,:,:)  )
-         ELSE
-                                     remintpoc(:,:,:) = 0.03_wp
-            IF( ln_p4z .OR. ln_p5z ) remintgoc(:,:,:) = 0.03_wp
-         ENDIF
-
          ! Read the cumulative total flux. If not in the restart file, it is set to 0          
          IF( iom_varid( numrtr, 'tcflxcum', ldstop = .FALSE. ) > 0 ) THEN  ! cumulative total flux of carbon
             CALL iom_get( numrtr, 'tcflxcum' , t_oce_co2_flx_cum  )
@@ -463,24 +445,34 @@ CONTAINS
          ENDIF
          !
          ! PISCES size proxy
-         ! Read the size of the different phytoplankton groups
-         ! If not in the restart file, they are set to 1
+         !
          IF( iom_varid( numrtr, 'sizen', ldstop = .FALSE. ) > 0 ) THEN
             CALL iom_get( numrtr, jpdom_auto, 'sizen' , sizen(:,:,:)  )
-               sizen(:,:,:) = MAX( 1.0, sizen(:,:,:) )
-            IF( ln_p4z .OR. ln_p5z )THEN
+            sizen(:,:,:) = MAX( 1.0, sizen(:,:,:) )
+         ELSE
+            sizen(:,:,:) = 1.
+         ENDIF
+
+         IF( ln_p4z .OR. ln_p5z ) THEN
+            IF( iom_varid( numrtr, 'sized', ldstop = .FALSE. ) > 0 ) THEN
                CALL iom_get( numrtr, jpdom_auto, 'sized' , sized(:,:,:)  )
                sized(:,:,:) = MAX( 1.0, sized(:,:,:) )
+            ELSE
+               sized(:,:,:) = 1.
             ENDIF
-            IF( ln_p5z ) THEN
+         ENDIF
+
+         ! PISCES-QUOTA specific part
+         IF( ln_p5z ) THEN
+            ! Read the size of the different phytoplankton groups
+            ! If not in the restart file, they are set to 1
+            IF( iom_varid( numrtr, 'sizep', ldstop = .FALSE. ) > 0 ) THEN
                CALL iom_get( numrtr, jpdom_auto, 'sizep' , sizep(:,:,:)  )
                sizep(:,:,:) = MAX( 1.0, sizep(:,:,:) )
+            ELSE
+               sizep(:,:,:) = 1.
             ENDIF
-         ELSE
-                                     sizen(:,:,:) = 1.
-            IF( ln_p4z .OR. ln_p5z ) sized(:,:,:) = 1.
-            IF( ln_p5z )             sizep(:,:,:) = 1.
-         ENDIF
+        ENDIF
         !
       ELSEIF( TRIM(cdrw) == 'WRITE' ) THEN
          ! write the specific variables of PISCES
@@ -497,11 +489,9 @@ CONTAINS
          ENDIF
 
          CALL iom_rstput( kt, nitrst, numrtw, 'Consfe3', consfe3(:,:,:) ) ! Si max concentration
-         CALL iom_rstput( kt, nitrst, numrtw, 'remintpoc', remintpoc(:,:,:) ) ! Mean remineralisation rate of POC
          IF ( ln_p4z .OR. ln_p5z ) THEN
             CALL iom_rstput( kt, nitrst, numrtw, 'Silicalim', xksi(:,:)    )
             CALL iom_rstput( kt, nitrst, numrtw, 'Silicamax', xksimax(:,:) )
-            CALL iom_rstput( kt, nitrst, numrtw, 'remintgoc', remintgoc(:,:,:) ) ! Mean remineralisation rate of GOC
             CALL iom_rstput( kt, nitrst, numrtw, 'sized', sized(:,:,:) )  ! Size of diatoms
          ENDIF
          IF( ln_p5z ) CALL iom_rstput( kt, nitrst, numrtw, 'sizep', sizep(:,:,:) )  ! Size of picophytoplankton
@@ -543,57 +533,54 @@ CONTAINS
        ! set total alkalinity, phosphate, nitrate & silicate
        zarea          = 1._wp / glob_sum( 'p4zsms', cvol(:,:,:) ) * 1e6              
 
-       IF( ln_pisdmp ) THEN
-          !      
-          DO_3D( 0, 0, 0, 0, 1, jpk)
-             zw3d(ji,jj,jk) = tr(ji,jj,jk,jpno3,Kmm) * cvol(ji,jj,jk)
-          END_3D
-          zno3sumn = glob_sum( 'p4zsms', zw3d(:,:,:) ) * zarea * rno3
-          ! Correct the trn mean content of NO3
-          IF(lwp) WRITE(numout,*) '       NO3N  mean : ', zno3sumn
-          DO_3D( 0, 0, 0, 0, 1, jpk)
-               tr(ji,jj,jk,jpno3,Kmm) = tr(ji,jj,jk,jpno3,Kmm) * no3mean / zno3sumn
-          END_3D
-          !
-          IF ( ln_p4z .OR. ln_p5z ) THEN
-             DO_3D( 0, 0, 0, 0, 1, jpk)
-                zw3d(ji,jj,jk) = tr(ji,jj,jk,jppo4,Kmm) * cvol(ji,jj,jk)
-             END_3D
-             zpo4sumn = glob_sum( 'p4zsms', zw3d(:,:,:)  ) * zarea * po4r
-             ! Correct the trn mean content of PO4
-             IF(lwp) WRITE(numout,*) '       PO4N  mean : ', zpo4sumn
-             DO_3D( 0, 0, 0, 0, 1, jpk)
-                tr(ji,jj,jk,jppo4,Kmm) = tr(ji,jj,jk,jppo4,Kmm) * po4mean / zpo4sumn
-             END_3D
-
-             DO_3D( 0, 0, 0, 0, 1, jpk)
-              zw3d(ji,jj,jk) = tr(ji,jj,jk,jpsil,Kmm) * cvol(ji,jj,jk)
-             END_3D
-             zsilsumn = glob_sum( 'p4zsms', zw3d(:,:,:)  ) * zarea
-             ! Correct the trn mean content of SiO3
-             IF(lwp) WRITE(numout,*) '       SiO3N mean : ', zsilsumn
-             DO_3D( 0, 0, 0, 0, 1, jpk)
-                tr(ji,jj,jk,jpsil,Kmm) = MIN( 400.e-6,tr(ji,jj,jk,jpsil,Kmm) &
-                      &               * silmean / zsilsumn )
-             END_3D
-          ENDIF
-       ENDIF   
-       !
-       IF( ln_pisdmp_alk ) THEN
-       
-          DO_3D( 0, 0, 0, 0, 1, jpk)
-             zw3d(ji,jj,jk) = tr(ji,jj,jk,jptal,Kmm) * cvol(ji,jj,jk)
-          END_3D
-          zalksumn = glob_sum( 'p4zsms', zw3d(:,:,:) ) * zarea
+        DO_3D( 0, 0, 0, 0, 1, jpk)
+           zw3d(ji,jj,jk) = tr(ji,jj,jk,jptal,Kmm) * cvol(ji,jj,jk)
+        END_3D
+        zalksumn = glob_sum( 'p4zsms', zw3d(:,:,:) ) * zarea
+        !
+        DO_3D( 0, 0, 0, 0, 1, jpk)
+           zw3d(ji,jj,jk) = tr(ji,jj,jk,jpno3,Kmm) * cvol(ji,jj,jk)
+        END_3D
+        zno3sumn = glob_sum( 'p4zsms', zw3d(:,:,:) ) * zarea * rno3
  
-          ! Correct the trn mean content of alkalinity
-          IF(lwp) WRITE(numout,*) '       TALKN mean : ', zalksumn
-          DO_3D( 0, 0, 0, 0, 1, jpk)
-             tr(ji,jj,jk,jptal,Kmm) = tr(ji,jj,jk,jptal,Kmm) * alkmean / zalksumn
-          END_3D
-       ENDIF   
+        ! Correct the trn mean content of alkalinity
+        IF(lwp) WRITE(numout,*) '       TALKN mean : ', zalksumn
+        DO_3D( 0, 0, 0, 0, 1, jpk)
+           tr(ji,jj,jk,jptal,Kmm) = tr(ji,jj,jk,jptal,Kmm) * alkmean / zalksumn
+        END_3D
 
-       DEALLOCATE( zw3d )  
+        ! Correct the trn mean content of NO3
+        IF(lwp) WRITE(numout,*) '       NO3N  mean : ', zno3sumn
+        DO_3D( 0, 0, 0, 0, 1, jpk)
+          tr(ji,jj,jk,jpno3,Kmm) = tr(ji,jj,jk,jpno3,Kmm) * no3mean / zno3sumn
+        END_3D
+
+        IF ( ln_p4z .OR. ln_p5z ) THEN
+           DO_3D( 0, 0, 0, 0, 1, jpk)
+              zw3d(ji,jj,jk) = tr(ji,jj,jk,jppo4,Kmm) * cvol(ji,jj,jk)
+           END_3D
+           zpo4sumn = glob_sum( 'p4zsms', zw3d(:,:,:)  ) * zarea * po4r
+
+           DO_3D( 0, 0, 0, 0, 1, jpk)
+              zw3d(ji,jj,jk) = tr(ji,jj,jk,jpsil,Kmm) * cvol(ji,jj,jk)
+           END_3D
+           zsilsumn = glob_sum( 'p4zsms', zw3d(:,:,:)  ) * zarea
+
+           ! Correct the trn mean content of PO4
+           IF(lwp) WRITE(numout,*) '       PO4N  mean : ', zpo4sumn
+           DO_3D( 0, 0, 0, 0, 1, jpk)
+              tr(ji,jj,jk,jppo4,Kmm) = tr(ji,jj,jk,jppo4,Kmm) * po4mean / zpo4sumn
+           END_3D
+
+           ! Correct the trn mean content of SiO3
+           IF(lwp) WRITE(numout,*) '       SiO3N mean : ', zsilsumn
+           DO_3D( 0, 0, 0, 0, 1, jpk)
+              tr(ji,jj,jk,jpsil,Kmm) = MIN( 400.e-6,tr(ji,jj,jk,jpsil,Kmm) &
+                      &               * silmean / zsilsumn )
+           END_3D
+        ENDIF
+            
+        DEALLOCATE( zw3d )  
       !
       ENDIF
       !
@@ -968,17 +955,6 @@ CONTAINS
         lvar = lenstr(cltru)
         ierr = nf_put_att_text (ncid, rstfe, 'units', lvar, cltru )
 
-        cltra = "remintpoc"   ;   cltrs = "remintpoc"   ;    cltru = "d-1"
-        ierr = nf_def_var (ncid, cltra, NF_DOUBLE, 4, r3dgrd, rstpoc)
-#ifdef NC4PAR
-        ierr = nf_var_par_access(ncid,rstpoc,nf_collective)
-#endif
-        lvar = lenstr(cltrs)
-        ierr = nf_put_att_text (ncid, rstpoc, 'long_name',    &
-        &                     lvar, cltrs )
-        lvar = lenstr(cltru)
-        ierr = nf_put_att_text (ncid, rstpoc, 'units', lvar, cltru )
-
         cltra = "sizen"   ;   cltrs = "sizen"   ;    cltru = "-"
         ierr = nf_def_var (ncid, cltra, NF_DOUBLE, 4, r3dgrd, rstszn)
 #ifdef NC4PAR
@@ -1036,18 +1012,6 @@ CONTAINS
            &                     lvar, cltrs )
            lvar = lenstr(cltru)
            ierr = nf_put_att_text (ncid, rstxksim, 'units', lvar, cltru )
-           !
-           cltra = "remintgoc"   ;   cltrs = "remintgoc"   ;    cltru = "d-1"
-           ierr = nf_def_var (ncid, cltra, NF_DOUBLE, 4, r3dgrd, rstgoc)
-#ifdef NC4PAR
-           ierr = nf_var_par_access(ncid,rstgoc,nf_collective)
-#endif
-           lvar = lenstr(cltrs)
-           ierr = nf_put_att_text (ncid, rstgoc, 'long_name',    &
-           &                     lvar, cltrs )
-           lvar = lenstr(cltru)
-           ierr = nf_put_att_text (ncid, rstgoc, 'units', lvar, cltru )
-           !
         ENDIF        
 
         IF( ln_p5z ) THEN
@@ -1186,14 +1150,6 @@ CONTAINS
           GOTO 99                                       !--> ERROR
        ENDIF
 
-       cltra="remintpoc"
-       ierr = nf_inq_varid (ncid, TRIM(cltra), rstpoc)
-       IF (ierr .NE. nf_noerr) THEN
-          WRITE(stdout,1) TRIM(cltra), cn_pisrst_out(1:lstr)
-          GOTO 99                                       !--> ERROR
-       ENDIF
-      
-
         IF( ln_p2z ) THEN
            cltra = "Thetanano" 
            ierr = nf_inq_varid (ncid, TRIM(cltra), rstthet)
@@ -1224,14 +1180,6 @@ CONTAINS
              WRITE(stdout,1) TRIM(cltra), cn_pisrst_out(1:lstr)
              GOTO 99                                       !--> ERROR
            ENDIF
-
-           cltra="remintgoc"
-           ierr = nf_inq_varid (ncid, TRIM(cltra), rstgoc)
-           IF (ierr .NE. nf_noerr) THEN
-              WRITE(stdout,1) TRIM(cltra), cn_pisrst_out(1:lstr)
-              GOTO 99                                       !--> ERROR
-           ENDIF
-      
         ENDIF        
 
         IF( ln_p5z ) THEN
@@ -1364,14 +1312,6 @@ CONTAINS
          WRITE(stdout,1) cltra, record, ierr
          GOTO 99                                         !--> ERROR
       ENDIF
-
-      cltra="remintpoc"   ;    zw3d(A2D(0),:) = remintpoc(A2D(0),:)
-      ierr = nf_fwrite(zw3d(START_2D_ARRAY,1), ncidpisrst,   &
-      &                             rstpoc, record, r3dvar)
-      IF (ierr .NE. nf_noerr) THEN
-         WRITE(stdout,1) cltra, record, ierr
-         GOTO 99                                         !--> ERROR
-      ENDIF
 !
       IF( ln_p2z ) THEN
          cltra="Thetanano"   ;    zw3d(A2D(0),:) = thetanano(A2D(0),:)
@@ -1407,15 +1347,6 @@ CONTAINS
             WRITE(stdout,1) cltra, record, ierr
             GOTO 99                                         !--> ERROR
          ENDIF
-
-         cltra="remintgoc"   ;    zw3d(A2D(0),:) = remintgoc(A2D(0),:)
-         ierr = nf_fwrite(zw3d(START_2D_ARRAY,1), ncidpisrst,   &
-         &                             rstgoc, record, r3dvar)
-         IF (ierr .NE. nf_noerr) THEN
-            WRITE(stdout,1) cltra, record, ierr
-            GOTO 99                                         !--> ERROR
-         ENDIF
-!
       ENDIF
 
       IF( ln_p5z ) THEN
@@ -1691,25 +1622,6 @@ CONTAINS
          END_3D
       ENDIF
 
-      cltra ="remintpoc"   
-      ierr = nf_inq_varid (ncid, cltra, varid)
-      IF(ierr == nf_noerr) THEN
-         ierr = nf_fread (zw3d(START_2D_ARRAY,1), ncid, varid, indx, r3dvar)
-         IF (ierr .NE. nf_noerr) THEN
-            MPI_master_only WRITE(stdout,2) cltra, indx, TRIM(cn_pisrst_in)
-            GOTO 99                                       !--> ERROR
-         ENDIF
-         MPI_master_only WRITE(stdout,3) cltra, TRIM(cn_pisrst_in)
-         DO_3D( 0, 0, 0, 0, 1, jpk)
-             remintpoc(ji,jj,jk) = zw3d(ji,jj,jk)
-         END_3D
-      ELSE
-         MPI_master_only WRITE(stdout,4) cltra, TRIM(cn_pisrst_in)
-         DO_3D( 0, 0, 0, 0, 1, jpk)
-             remintpoc(ji,jj,jk) = 0.03
-         END_3D
-      ENDIF
-
       IF( ln_p2z ) THEN
         cltra ="Thetanano"   
         ierr = nf_inq_varid (ncid, cltra, varid)
@@ -1788,26 +1700,6 @@ CONTAINS
               sized(ji,jj,jk) = 1.
            END_3D
         ENDIF
-
-        cltra ="remintgoc"   
-        ierr = nf_inq_varid (ncid, cltra, varid)
-        IF(ierr == nf_noerr) THEN
-           ierr = nf_fread (zw3d(START_2D_ARRAY,1), ncid, varid, indx, r3dvar)
-           IF (ierr .NE. nf_noerr) THEN
-              MPI_master_only WRITE(stdout,2) cltra, indx, TRIM(cn_pisrst_in)
-              GOTO 99                                       !--> ERROR
-           ENDIF
-           MPI_master_only WRITE(stdout,3) cltra, TRIM(cn_pisrst_in)
-           DO_3D( 0, 0, 0, 0, 1, jpk)
-              remintgoc(ji,jj,jk) = zw3d(ji,jj,jk)
-           END_3D
-        ELSE
-           MPI_master_only WRITE(stdout,4) cltra, TRIM(cn_pisrst_in)
-           DO_3D( 0, 0, 0, 0, 1, jpk)
-             remintgoc(ji,jj,jk) = 0.03
-           END_3D
-        ENDIF
-
      ENDIF
 
      IF( ln_p5z ) THEN
@@ -1850,10 +1742,6 @@ CONTAINS
          cltra ="sizen"   
          MPI_master_only WRITE(stdout,5) cltra
          sizen(:,:,:) = 1.
-         ! remintpoc
-         cltra ="remintpoc"   
-         MPI_master_only WRITE(stdout,5) cltra
-         remintpoc(:,:,:) = 0.03
          ! Thetanano
          IF( ln_p2z ) THEN
             cltra ="Thetanano"   
@@ -1871,10 +1759,6 @@ CONTAINS
             cltra ="sized"   
             MPI_master_only WRITE(stdout,5) cltra
             sized(:,:,:) = 1.
-            ! remintgoc
-            cltra ="remintgoc"   
-            MPI_master_only WRITE(stdout,5) cltra
-            remintgoc(:,:,:) = 0.03
          ENDIF
          ! sizep
          IF( ln_p5z ) THEN

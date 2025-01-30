@@ -39,7 +39,7 @@ MODULE p4zsink
    REAL(wp), PUBLIC, ALLOCATABLE, SAVE, DIMENSION(:,:) ::  sinksilb  !: BSi sinking fluxes at bottom
    REAL(wp), PUBLIC, ALLOCATABLE, SAVE, DIMENSION(:,:) ::  sinkponb  !: POC sinking fluxes at bottom 
    REAL(wp), PUBLIC, ALLOCATABLE, SAVE, DIMENSION(:,:) ::  sinkpopb  !: POC sinking fluxes at bottom 
-   INTEGER,  PUBLIC, ALLOCATABLE, SAVE, DIMENSION(:,:) :: nlev100
+   INTEGER, PUBLIC, SAVE :: ik100
 
    REAL(wp) :: xfact
    LOGICAL  :: l_dia_sink, l_diag
@@ -70,7 +70,7 @@ CONTAINS
       !!---------------------------------------------------------------------
       INTEGER, INTENT(in) :: kt, knt
       INTEGER, INTENT(in) :: Kbb, Kmm, Krhs  ! time level indices
-      INTEGER  ::   ji, jj, jk, ikb, ik1
+      INTEGER  ::   ji, jj, jk, ikb
       CHARACTER (len=25) :: charout
       REAL(wp) :: zmax, zfact
       REAL(wp), DIMENSION(A2D(0),jpk+1) :: zsinking, zsinking2
@@ -88,14 +88,6 @@ CONTAINS
          xfact = 1.e+3 * rfact2r  !  conversion from mol/l/kt to  mol/m3/s
       ENDIF
       l_diag = l_dia_sink .AND. knt == nrdttrc
-
-      !
-      nlev100(:,:) = jpk        !  last level where depth less than 100 m
-      DO_2D( 0, 0, 0, 0 )
-         DO jk = jpkm1, 1, -1
-            IF( gdept(ji,jj,jk,Kmm) > 100. )  nlev100(ji,jj) = jk - 1
-         END DO
-      END_2D
 
       ! Initialize the local arrays
       zsinking(:,:,:) = 0._wp ; zsinking2(:,:,:) = 0._wp
@@ -125,7 +117,6 @@ CONTAINS
             wsbio3(ji,jj,jk) = ( wsbio + wsbio2 * ( sizen(ji,jj,1) - 1.0 ) * 0.05 * zfact )    &
                &               / ( 1.0 + ( sizen(ji,jj,1) - 1.0 ) * 0.05 * zfact )
          END_3D
-         wsbio3(:,:,jpk) = wsbio
       ELSE
          wsbio3(:,:,:) = wsbio
       ENDIF
@@ -143,23 +134,19 @@ CONTAINS
       !
       IF( l_diag ) THEN
          ALLOCATE( zw3d(GLOBAL_2D_ARRAY,jpk) )  ;  zw3d(:,:,:) = 0._wp     
-         ALLOCATE( zw2d(GLOBAL_2D_ARRAY)     )  ;  zw2d(:,:) = 0._wp
          DO_3D( 0, 0, 0, 0, 1, jpk)
-            zw3d(ji,jj,jkR) = ( zsinking(ji,jj,jk) + zsinking2(ji,jj,jk) ) &
-                   &        * xfact * tmask(ji,jj,jk)
+         zw3d(ji,jj,jkR) = ( zsinking(ji,jj,jk) + zsinking2(ji,jj,jk) ) &
+               &        * xfact * tmask(ji,jj,jk)
          END_3D
-         DO_2D( 0, 0, 0, 0 )
-            ik1 = nlev100(ji,jj)
-            zw2d(ji,jj) = ( zsinking(ji,jj,ik1) + zsinking2(ji,jj,ik1) ) &
-                   &        * xfact * tmask(ji,jj,ik1)
-         END_2D
-         CALL iom_put( "EPC100",  zw2d )  ! Export of carbon at 100m
+         CALL iom_put( "EPC100",  zw3d(:,:,ik100) )  ! Export of carbon at 100m
          CALL iom_put( "EXPC"  ,  zw3d )             ! Export of carbon in the water column
+         ALLOCATE( zw2d(A2D(0)) )
          DO_2D( 0, 0, 0, 0 )
-            zw2d(ji,jj) = zw2d(ji,jj) * e1e2t(ji,jj)
+            zw2d(ji,jj) = zw3d(ji,jj,ik100) * e1e2t(ji,jj)
          END_2D 
          t_oce_co2_exp  = glob_sum( 'p4zsink',  zw2d )
          CALL iom_put( "tcexp", t_oce_co2_exp )      ! Total cabon exort
+         DEALLOCATE( zw2d )
       ENDIF
       IF( .NOT. ln_p2z ) THEN
          ! Compute the sedimentation term using trc_sink for all the sinking particles
@@ -173,12 +160,8 @@ CONTAINS
             DO_3D( 0, 0, 0, 0, 1, jpk)
                zw3d(ji,jj,jkR) =  zsinking(ji,jj,jk) * xfact * tmask(ji,jj,jk)
             END_3D
-            DO_2D( 0, 0, 0, 0 )
-               ik1 = nlev100(ji,jj)
-               zw2d(ji,jj) = zsinking(ji,jj,ik1) * xfact * tmask(ji,jj,ik1)
-            END_2D
-            CALL iom_put( "EPCAL100",  zw2d )  ! Export of calcite at 100m
-            CALL iom_put( "EXPCAL"  ,  zw3d )  ! Export of calcite in the water column
+            CALL iom_put( "EPCAL100",  zw3d(:,:,ik100) )  ! Export of calcite at 100m
+            CALL iom_put( "EXPCAL"  ,  zw3d )             ! Export of calcite in the water column
          ENDIF
          !
          CALL trc_sink( kt, Kbb, Kmm, wsbio4, zsinking, jpgsi, rfact2 )
@@ -190,11 +173,7 @@ CONTAINS
             DO_3D( 0, 0, 0, 0, 1, jpk)
                zw3d(ji,jj,jkR) =  zsinking(ji,jj,jk) * xfact * tmask(ji,jj,jk)
             END_3D
-            DO_2D( 0, 0, 0, 0 )
-               ik1 = nlev100(ji,jj)
-               zw2d(ji,jj) = zsinking(ji,jj,ik1) * xfact * tmask(ji,jj,ik1)
-            END_2D
-            CALL iom_put( "EPSI100",  zw2d )  ! Export of Silicate at 100m
+            CALL iom_put( "EPSI100",  zw3d(:,:,ik100) )  ! Export of Silicate at 100m
             CALL iom_put( "EXPSI"  ,  zw3d )             ! Export of Silicate in the water column
          ENDIF
          !
@@ -205,12 +184,7 @@ CONTAINS
               zw3d(ji,jj,jkR) = ( zsinking(ji,jj,jk) + zsinking2(ji,jj,jk) ) &
                &        * xfact * tmask(ji,jj,jk)
             END_3D
-            DO_2D( 0, 0, 0, 0 )
-               ik1 = nlev100(ji,jj)
-               zw2d(ji,jj) = ( zsinking(ji,jj,ik1) + zsinking2(ji,jj,ik1) ) &
-                      &        * xfact * tmask(ji,jj,ik1)
-            END_2D
-            CALL iom_put( "EPFE100",  zw2d )  ! Export of iron at 100m
+            CALL iom_put( "EPFE100",  zw3d(:,:,ik100) )  ! Export of iron at 100m
             CALL iom_put( "EXPFE"  ,  zw3d )             ! Export of iron in the water column
          ENDIF
       ENDIF
@@ -243,7 +217,7 @@ CONTAINS
          END_2D
       ENDIF
       !
-      IF( l_diag )  DEALLOCATE( zw3d, zw2d )
+      IF( l_diag )  DEALLOCATE( zw3d )
       !
       IF(sn_cfctl%l_prttrc)   THEN  ! print mean trends (used for debugging)
          WRITE(charout, FMT="('sink')")
@@ -266,6 +240,19 @@ CONTAINS
       !!
       !! ** input   :   
       !!----------------------------------------------------------------------
+      INTEGER :: jk
+      REAL(wp) :: zmax
+      !!----------------------------------------------------------------------
+      !
+      ik100 = 10        !  last level where depth less than 100 m
+      DO jk = jpkm1, 1, -1
+      !   IF( gdept_1d(jk) > 100. )  ik100 = jk - 1
+         zmax = MAXVAL( gdept(:,:,jk,Kmm) )
+         IF( zmax > 100. )  ik100 = jk - 1
+      END DO
+      IF (lwp) WRITE(numout,*)
+      IF (lwp) WRITE(numout,*) ' Level corresponding to 100m depth ',  ik100 + 1
+      IF (lwp) WRITE(numout,*)
       !
       wsbio3(:,:,:) = wsbio
       wsbio4(:,:,:) = wsbio2
@@ -283,19 +270,17 @@ CONTAINS
       !!----------------------------------------------------------------------
       !!                     ***  ROUTINE p4z_sink_alloc  ***
       !!----------------------------------------------------------------------
-      INTEGER :: ierr(4)
+      INTEGER :: ierr(3)
       !!----------------------------------------------------------------------
       !
       ierr(:) = 0
       !
       ALLOCATE( sinkpocb(A2D(0)), sinkcalb(A2D(0)), STAT=ierr(1) )
-      ALLOCATE( nlev100(A2D(0)), STAT=ierr(2) )
       !
       IF( .NOT. ln_p2z ) THEN
-         ALLOCATE( sinksilb(A2D(0)), STAT=ierr(3) )
+         ALLOCATE( sinksilb(A2D(0)), STAT=ierr(2) )                
          !
-         IF( ln_p5z ) &
-             &   ALLOCATE( sinkponb(A2D(0)), sinkpopb(A2D(0)), STAT=ierr(4) )
+         IF( ln_p5z ) ALLOCATE( sinkponb(A2D(0)), sinkpopb(A2D(0)), STAT=ierr(3) )
       ENDIF
       !
       p4z_sink_alloc = MAXVAL( ierr )

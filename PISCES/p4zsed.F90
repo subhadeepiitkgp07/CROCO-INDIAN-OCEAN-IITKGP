@@ -30,15 +30,12 @@ MODULE p4zsed
 
    REAL(wp) ::   bureffmin    !: Minimum burial efficiency
    REAL(wp) ::   bureffvar    !: Variable coef. for burial efficiency
-
-   REAL(wp) :: sedsilfrac     !: percentage of silica loss in the sediments
-   REAL(wp) :: sedcalfrac     !: percentage of calcite loss in the sediments
-   REAL(wp) :: sedfactcalmin  !: Minimum value for dissolving calcite at the bottom
-   REAL(wp) :: sedfactcalvar  !: Variable  value for dissolving calcite at the bottom
-   
  
    REAL(wp), PUBLIC, ALLOCATABLE, SAVE, DIMENSION(:,:  ) :: sdenit     !: Nitrate reduction in the sediments
    !
+   REAL(wp), PUBLIC :: r1_rday          
+   REAL(wp), PUBLIC :: sedsilfrac, sedcalfrac
+
    LOGICAL  :: l_dia_sdenit, l_dia_sed
 
    !! * Substitutions
@@ -126,8 +123,7 @@ CONTAINS
             zcaloss = sinkcalb(ji,jj) * zdep
             !
             zfactcal = MAX(-0.1, MIN( excess(ji,jj,ikt), 0.2 ) )
-            zfactcal = sedfactcalmin + sedfactcalvar &
-                    &            * MIN( 1., (0.1 + zfactcal) / ( 0.5 - zfactcal ) )
+            zfactcal = 0.3 + 0.7 * MIN( 1., (0.1 + zfactcal) / ( 0.5 - zfactcal ) )
             zrivalk(ji,jj) = sedcalfrac * zfactcal
             tr(ji,jj,ikt,jptal,Krhs) =  tr(ji,jj,ikt,jptal,Krhs) &
                     &                  + zcaloss * zrivalk(ji,jj) * 2.0
@@ -270,9 +266,7 @@ CONTAINS
       INTEGER  :: ios                 ! Local integer output status for namelist read
       !
       !!
-     NAMELIST/nampissed/bureffmin, bureffvar, &
-         &               sedsilfrac, sedcalfrac, sedfactcalmin, sedfactcalvar
-      
+      NAMELIST/nampissed/bureffmin, bureffvar
       !!----------------------------------------------------------------------
       !
       IF(lwp) THEN
@@ -285,15 +279,13 @@ CONTAINS
       READ_NML_CFG(numnatp,nampissed)
       IF(lwm) WRITE ( numonp, nampissed )
 
-
       IF(lwp) THEN
-         WRITE(numout,*) '      Minimum burial efficiency                           bureffmin      = ', bureffmin
-         WRITE(numout,*) '      Variable coef. for burial efficiency                bureffvar      = ', bureffvar
-         WRITE(numout,*) '      percentage of silica loss in the sediments          sedsilfrac     = ', sedsilfrac
-         WRITE(numout,*) '      percentage of calcite loss in the sediments         sedcalfrac     = ', sedcalfrac
-         WRITE(numout,*) '      Minimum value for dissolving calcite at the bottom  sedfactcalmin  = ', sedfactcalmin
-         WRITE(numout,*) '      variable value for dissolving calcite at the bottom sedfactcalvar  = ', sedfactcalvar
+         WRITE(numout,*) '      Minimum burial efficiency                  bureffmin = ', bureffmin 
+         WRITE(numout,*) '      Variable coef. for burial efficiency       bureffvar = ', bureffvar
       ENDIF
+      !
+      sedsilfrac = 0.03     ! percentage of silica loss in the sediments
+      sedcalfrac = 0.99     ! percentage of calcite loss in the sediments
       !
 #if defined key_sediment      
       lk_sed = ln_sediment .AND. ln_sed_2way 

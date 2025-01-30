@@ -8,6 +8,7 @@ MODULE p2zprod
    !! History :   1.0  !  2004     (O. Aumont) Original code
    !!             2.0  !  2007-12  (C. Ethe, G. Madec)  F90
    !!             3.4  !  2011-05  (O. Aumont, C. Ethe) New parameterization of light limitation
+   !!             3.*  !  2025-01  (S. Maishal, R. Person) Change to High Performance
 #if defined key_pisces
    !!----------------------------------------------------------------------
    !!   p2z_prod       : Compute the growth Rate of the two phytoplanktons groups
@@ -102,6 +103,9 @@ CONTAINS
       ! absolute light level definition of the euphotic zone
       ! ------------------------------------------------------------------------- 
       IF ( ln_p4z_dcyc ) THEN    ! Diurnal cycle in PISCES
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, jk, zval) &
+         !$OMP SHARED(etot_ndcy, gdepw, hmld, heup_01, zmxl, rtrn)
          DO_3D( 0, 0, 0, 0, 1, jpkm1)
             IF( etot_ndcy(ji,jj,jk) > 1.E-3 ) THEN
                zval = 24.0
@@ -111,7 +115,11 @@ CONTAINS
                zmxl(ji,jj,jk) = zval
             ENDIF
          END_3D
+         !$OMP END PARALLEL DO
       ELSE ! No diurnal cycle in PISCES
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, jk, zval) &
+         !$OMP SHARED(etot_ndcy, gdepw, hmld, heup_01, strn, zmxl, rtrn)
          DO_3D( 0, 0, 0, 0, 1, jpkm1)
             IF( etot_ndcy(ji,jj,jk) > 1.E-3 ) THEN
                zval = MAX( 1., strn(ji,jj) )
@@ -121,12 +129,17 @@ CONTAINS
                zmxl(ji,jj,jk) = zval
             ENDIF
          END_3D
+         !$OMP END PARALLEL DO
       ENDIF
 
       ! The formulation proposed by Geider et al. (1997) has been modified 
       ! to exclude the effect of nutrient limitation and temperature in the PI
       ! curve following Vichi et al. (2007)
       ! -----------------------------------------------------------------------
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, zmxl_fac, zmxl_chl, zprbio, zpislopen) &
+      !$OMP SHARED(etot_ndcy, zmxl, zprmax, pislopen, thetanano, &
+                   xlimphy, rday, rtrn, enano, enanom, zprchln)
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
          IF( etot_ndcy(ji,jj,jk) > 1.E-3 ) THEN
             zmxl_fac = 1.0 - EXP( -0.26 * zmxl(ji,jj,jk) )
@@ -150,11 +163,16 @@ CONTAINS
             zprchln(ji,jj,jk) = ( 1.- EXP( -zpislopen * enanom(ji,jj,jk) ) )
          ENDIF
       END_3D
-
+      !$OMP END PARALLEL DO
       !  Computation of a proxy of the N/C quota from nutrient limitation 
       !  and light limitation. Steady state is assumed to allow the computation
       !  ----------------------------------------------------------------------
       !thetanano(:,:,:) = chlcnm
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, zval, zmxl_fac, thetanano) &
+      !$OMP SHARED(xnanono3, zprmax, zprbio, rtrn, quotan, &
+                   zmxl, chlcnm, pislopen, enanom, xlimphy, &
+                   rday, chlcmin)
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
           zval = xnanono3(ji,jj,jk) * zprmax(ji,jj,jk) / ( zprbio(ji,jj,jk) + rtrn )
           quotan(ji,jj,jk) = MIN( 1., 0.3 + 0.7 * zval )
@@ -166,16 +184,24 @@ CONTAINS
              &                  / ( 2.0 * zprmax(ji,jj,jk) * zmxl_fac * xlimphy(ji,jj,jk) * rday + rtrn ) )
           thetanano(ji,jj,jk) = MAX( chlcmin, thetanano(ji,jj,jk) )
       END_3D
-
+      !$OMP END PARALLEL DO
       ! Sea-ice effect on production
       ! No production is assumed below sea ice
       ! -------------------------------------- 
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk) &
+      !$OMP SHARED(zprbio, fr_i)
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
          zprbio(ji,jj,jk) = zprbio(ji,jj,jk) * ( 1. - fr_i(ji,jj) )
       END_3D
-
+      !$OMP END PARALLEL DO
       ! Computation of the various production  and nutrient uptake terms
-      ! ---------------------------------------------------------------
+      ! -----------------------------------------------------------------------
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, zlimfac, zlimfac3, zsizetmp) &
+      !$OMP SHARED(etot_ndcy, zprorcan, zprbio, xlimphy, tr, &
+                   jpphy, Kbb, rfact2, zprchln, zprmax, rtrn, &
+                   sizena, xsizern)
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
          IF( etot_ndcy(ji,jj,jk) > 1.E-3 ) THEN
             !  production terms for nanophyto. (C)
@@ -187,17 +213,21 @@ CONTAINS
             ! size at time step t+1 and is thus updated at the end of the 
             ! current time step
             ! --------------------------------------------------------------------
-            zlimfac  = xlimphy(ji,jj,jk) * zprbio(ji,jj,jk) / ( zprmax(ji,jj,jk) + rtrn )
-            zlimfac   = SIN( 3.1416 * zlimfac / 2.0 )
+         !   zlimfac = xlimphy(ji,jj,jk) * zprchln(ji,jj,jk) / ( zprmax(ji,jj,jk) + rtrn )
+            zlimfac = xlimphy(ji,jj,jk) * zprchln(ji,jj,jk) 
             zlimfac3 = zlimfac * zlimfac * zlimfac
-            zsizetmp = 1.0 + ( xsizern - 1.0 ) * zlimfac3
-            sizena(ji,jj,jk) = sizen(ji,jj,jk) + zprbio(ji,jj,jk) * xlimphy(ji,jj,jk) * ( 1.0 - xlimphy(ji,jj,jk) )   &
-              &          * rfact2 * ( zsizetmp - sizen(ji,jj,jk) ) * ABS( zsizetmp / sizen(ji,jj,jk) - 1.0 )
-            sizena(ji,jj,jk) = MIN( xsizern, sizena(ji,jj,jk) )
+            zsizetmp = 1.0 + 1.3 * ( xsizern - 1.0 ) * zlimfac3/(0.3 + zlimfac3)
+            sizena(ji,jj,jk) = min(xsizern, max( sizena(ji,jj,jk), zsizetmp ) )
          ENDIF
       END_3D
-
+      !$OMP END PARALLEL DO
       !   Update the arrays TRA which contain the biological sources and sinks
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, zprodfer) &
+      !$OMP SHARED(etot_ndcy, zprorcan, feratz, texcretn, &
+                   tr, jpno3, jpfer, consfe3, rtrn, plig, &
+                   jpdoc, jpoxy, excretn, o2ut, o2nit, rno3, &
+                   jpfer, jpphy, jpdic, jptal, Kbb, rfact2)
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
          IF( etot_ndcy(ji,jj,jk) > 1.E-3 ) THEN
             zprodfer = zprorcan(ji,jj,jk) * feratz * texcretn
@@ -217,13 +247,17 @@ CONTAINS
             tr(ji,jj,jk,jptal,Krhs) = tr(ji,jj,jk,jptal,Krhs) + rno3 * zprorcan(ji,jj,jk)
          ENDIF
       END_3D
-
+      !$OMP END PARALLEL DO
     ! Total primary production per year
     IF( l_dia_pp )  THEN
        ALLOCATE( zw3d(A2D(0),jpk) )  ;  zw3d(A2D(0),jpk) = 0._wp
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk) &
+      !$OMP SHARED(zprorcan, cvol, zw3d)
        DO_3D( 0, 0, 0, 0, 1, jpkm1)
           zw3d(ji,jj,jk) = zprorcan(ji,jj,jk) * cvol(ji,jj,jk)
        END_3D
+      !$OMP END PARALLEL DO
        tpp = glob_sum( 'p2zprod', zw3d )
        DEALLOCATE ( zw3d )
     ENDIF
@@ -233,20 +267,32 @@ CONTAINS
        zfact = 1.e+3 * rfact2r  !  conversion from mol/l/kt to  mol/m3/s
        IF( l_dia_pp ) THEN
           ALLOCATE( zw3d(GLOBAL_2D_ARRAY,jpk) )  ;  zw3d(:,:,:) = 0._wp
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, jkR) &
+         !$OMP SHARED(thetanano, zfact, tmask, zw3d)
           DO_3D( 0, 0, 0, 0, 1, jpk)
              zw3d(ji,jj,jkR) = thetanano(ji,jj,jk) * zfact * tmask(ji,jj,jk) 
           END_3D
+         !$OMP END PARALLEL DO
           CALL iom_put( "THETANANO", zw3d ) ! Diagnostic Chl:C ratio
           !
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, jkR) &
+         !$OMP SHARED(thetanano, tr, tmask, zw3d)
           DO_3D( 0, 0, 0, 0, 1, jpk)
              zw3d(ji,jj,jkR) = thetanano(ji,jj,jk) * 12. &
                &         * tr(ji,jj,jk,jpphy,Kbb) * 1.0e+6 * tmask(ji,jj,jk) 
           END_3D
+         !$OMP END PARALLEL DO
           CALL iom_put( "CHL", zw3d ) ! total Chloropyll
           !
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, jkR) &
+         !$OMP SHARED(zprorcan, zfact, tmask, zw3d)
           DO_3D( 0, 0, 0, 0, 1, jpk)
              zw3d(ji,jj,jkR) = zprorcan(ji,jj,jk) * zfact * tmask(ji,jj,jk) 
           END_3D
+         !$OMP END PARALLEL DO
           CALL iom_put( "PPPHYN", zw3d )  ! primary production by nanophyto
           CALL iom_put( "TPP", zw3d ) ! total primary production
           CALL iom_put( "PPNEWo2", ( o2ut + o2nit ) * zw3d ) ! Oxygen production by the New Produc
@@ -256,15 +302,23 @@ CONTAINS
        !
        IF( l_dia_mu ) THEN
           ALLOCATE( zw3d(GLOBAL_2D_ARRAY,jpk) )  ;  zw3d(:,:,:) = 0._wp
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, jkR) &
+         !$OMP SHARED(zprmax, tmask, zw3d)
           DO_3D( 0, 0, 0, 0, 1, jpk)
              zw3d(ji,jj,jkR) = zprmax(ji,jj,jk) * tmask(ji,jj,jk) 
           END_3D
+         !$OMP END PARALLEL DO
           CALL iom_put( "Mumax", zw3d )
           ! Realized growth rate for nanophyto
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, jkR) &
+         !$OMP SHARED(zprbio, xlimphy, tmask, zw3d)
           DO_3D( 0, 0, 0, 0, 1, jpk)
              zw3d(ji,jj,jkR) = zprbio(ji,jj,jk) * xlimphy(ji,jj,jk) &
                  &          * tmask(ji,jj,jk) 
           END_3D
+         !$OMP END PARALLEL DO
           CALL iom_put( "MuN", zw3d )
           DEALLOCATE ( zw3d )
        ENDIF
@@ -272,11 +326,15 @@ CONTAINS
        IF( l_dia_light ) THEN
           ALLOCATE( zw3d(GLOBAL_2D_ARRAY,jpk) )  ;  zw3d(:,:,:) = 0._wp
           ! light limitation term for nano
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, jkR) &
+         !$OMP SHARED(zprbio, zprmax, rtrn, tmask, zw3d)
           DO_3D( 0, 0, 0, 0, 1, jpk)
              zw3d(ji,jj,jkR) = zprbio(ji,jj,jk) &
                  &          / ( zprmax(ji,jj,jk) + rtrn ) &
                  &          * tmask(ji,jj,jk) 
           END_3D
+         !$OMP END PARALLEL DO
           CALL iom_put( "LNlight", zw3d )
           DEALLOCATE ( zw3d )
        ENDIF
@@ -286,11 +344,16 @@ CONTAINS
 #if defined key_trc_diaadd
       !   Supplementary diagnostics
      zfact = 1.e3 * rfact2r
+    !$OMP PARALLEL DO &
+    !$OMP PRIVATE(ji, jj, jkR) &
+    !$OMP SHARED(zprorcan, zfact, tmask, trc3d, &
+                 thetanano, tr, o2ut, o2nit)
      DO_3D( 0, 0, 0, 0, 1, jpk)
         trc3d(ji,jj,jkR,jp_pphy  ) = zprorcan(ji,jj,jk) * zfact * tmask(ji,jj,jk)  ! primary production by nanophyto
         trc3d(ji,jj,jkR,jp_pnew  ) = thetanano(ji,jj,jk) * tr(ji,jj,jk,jpphy,Kbb) * 1.0e+6 * tmask(ji,jj,jk) ! Total chloro.
         trc3d(ji,jj,jkR,jp_pnewo2) = ( o2ut + o2nit ) * zprorcan(ji,jj,jk) * zfact * tmask(ji,jj,jk) ! Oxygen production by the New Produc.
      END_3D
+    !$OMP END PARALLEL DO
 #endif
      IF(sn_cfctl%l_prttrc)   THEN  ! print mean trends (used for debugging)
          WRITE(charout, FMT="('prod')")

@@ -7,6 +7,7 @@ MODULE p2zmort
    !!======================================================================
    !! History :   1.0  !  2002     (O. Aumont)  Original code
    !!             2.0  !  2007-12  (C. Ethe, G. Madec)  F90
+   !!             3.*  !  2025-01  (S. Maishal, R. Person) Change to High Performance
 #if defined key_pisces
    !!----------------------------------------------------------------------
    !!   p4z_mort       : Compute the mortality terms for phytoplankton
@@ -59,6 +60,12 @@ CONTAINS
       IF( ln_timing )   CALL timing_start('p2z_mort')
       !
       prodcal(:,:,:) = 0._wp   ! calcite production variable set to zero
+
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, zcompaph, zlim2, zlim1, &
+                       zrespp, ztortp, zmortp, zprcaca) &
+      !$OMP SHARED(tr, prodcal, xfracal, xlimphy, xdiss, &
+                       xkmort, mpratn, wchln, prodpoc)
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
          zcompaph = MAX( ( tr(ji,jj,jk,jpphy,Kbb) - 1e-9 ), 0.e0 )
 
@@ -93,6 +100,7 @@ CONTAINS
          prodpoc(ji,jj,jk) = prodpoc(ji,jj,jk) + zmortp
          !
       END_3D
+      !$OMP END PARALLEL DO
       !
        IF(sn_cfctl%l_prttrc)   THEN  ! print mean trends (used for debugging)
          WRITE(charout, FMT="('nano')")

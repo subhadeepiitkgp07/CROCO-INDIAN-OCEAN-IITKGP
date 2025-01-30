@@ -7,6 +7,7 @@ MODULE p4zfechem
    !!======================================================================
    !! History :   3.5  !  2012-07 (O. Aumont, A. Tagliabue, C. Ethe) Original code
    !!             3.6  !  2015-05  (O. Aumont) PISCES quota
+   !!             3.*  !  2025-02  (S. Maishal, R. Person) MPI and optimization
 #if defined key_pisces
    !!----------------------------------------------------------------------
    !!   p4z_fechem       : Compute remineralization/scavenging of iron
@@ -86,10 +87,14 @@ CONTAINS
       ! Total ligand concentration : Ligands can be chosen to be constant or variable
       ! Parameterization from Pham and Ito (2018)
       ! -------------------------------------------------
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, xfecolagg) &
+      !$OMP SHARED(ligand, chemo2, tr, jpoxy, Kbb)
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
          xfecolagg(ji,jj,jk) = ligand * 1E9 + 0.01 &
                  &  * MAX(0., (chemo2(ji,jj,jk) - tr(ji,jj,jk,jpoxy,Kbb) ) * 1E6 )**0.8
       END_3D
+      !$OMP END PARALLEL DO
       !
       IF( ln_ligvar ) THEN
          DO_3D( 0, 0, 0, 0, 1, jpkm1)
@@ -98,20 +103,27 @@ CONTAINS
             ztotlig(ji,jj,jk) =  MIN( ztotlig(ji,jj,jk), 10. )
          END_3D
       ELSE
-        IF( ln_ligand ) THEN  
+        IF( ln_ligand ) THEN
+           !$OMP PARALLEL DO &
+           !$OMP PRIVATE(ji, jj, jk, ztotlig) &
+           !$OMP SHARED(tr, jpdoc, Kbb, xfecolagg)
            DO_3D( 0, 0, 0, 0, 1, jpkm1)
               ztotlig(ji,jj,jk) = tr(ji,jj,jk,jplgw,Kbb) * 1E9
            END_3D
+           !$OMP END PARALLEL DO
         ELSE
              ztotlig(:,:,:) = ligand * 1E9 
         ENDIF
       ENDIF
 
       ! ------------------------------------------------------------
-      !  from Aumont and Bopp (2006)
+      ! From Aumont and Bopp (2006)
       ! This model is based on one ligand, Fe2+ and Fe3+ 
       ! Chemistry is supposed to be fast enough to be at equilibrium
       ! ------------------------------------------------------------
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, ztl1, zkeq, zklight, zconsfe, zfesatur, ztfe, za1) &
+      !$OMP SHARED(fekeq, etot, xpow, consfe3, tr, jpfer, Kbb, rtrn, zFe3)
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
           ztl1            = ztotlig(ji,jj,jk)
           zkeq            = fekeq(ji,jj,jk)
@@ -119,17 +131,22 @@ CONTAINS
           zconsfe         = consfe3(ji,jj,jk) / xpow
           zfesatur        = ztl1 * 1E-9
           ztfe            = (1.0 + zklight) * tr(ji,jj,jk,jpfer,Kbb) 
-          ! Fe' is the root of a 2nd order polynom
+          ! Fe' is the root of a 2nd order polynomial
           za1 =  1. + zfesatur * zkeq + zklight +  zconsfe - zkeq * tr(ji,jj,jk,jpfer,Kbb)
           zFe3 (ji,jj,jk) = ( -1 * za1 + SQRT( za1**2 + 4. * ztfe * zkeq) ) / ( 2. * zkeq + rtrn )
       END_3D
+      !$OMP END PARALLEL DO
       !
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, zfel1) &
+      !$OMP SHARED(tr, jpfer, Kbb, rtrn, zFe3, plig)
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
          zfel1 = MAX( 0., tr(ji,jj,jk,jpfer,Kbb) - zFe3(ji,jj,jk) )
          plig(ji,jj,jk) =  MAX( 0., ( zfel1 / ( tr(ji,jj,jk,jpfer,Kbb) + rtrn ) ) )
       END_3D
+      !$OMP END PARALLEL DO
       !
-      zdust = 0.         ! if no dust available
+      zdust = 0.         ! if no dust input available
 
       ! Computation of the colloidal fraction that is subjecto to coagulation
       ! The assumption is that 50% of complexed iron is colloidal. Furthermore
@@ -143,26 +160,44 @@ CONTAINS
       ! to coagulate
       ! ----------------------------------------------------------------------
       IF (ln_ligand) THEN
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, jk, zfel1) &
+         !$OMP SHARED(tr, jpfer, Kbb, zFe3, zfecoll, ztotlig, xfecolagg, rtrn)
          DO_3D( 0, 0, 0, 0, 1, jpkm1)
             zfel1 = MAX( 0., tr(ji,jj,jk,jpfer,Kbb) - zFe3(ji,jj,jk) )
             zfecoll(ji,jj,jk) = 0.5 * zfel1 * MAX(0., ztotlig(ji,jj,jk) - xfecolagg(ji,jj,jk) ) &
                   &              / ( ztotlig(ji,jj,jk) + rtrn ) 
          END_3D
+         !$OMP END PARALLEL DO
       ELSE
          IF (ln_ligvar) THEN
+            !$OMP PARALLEL DO &
+            !$OMP PRIVATE(ji, jj, jk, zfel1) &
+            !$OMP SHARED(tr, jpfer, Kbb, zFe3, zfecoll, ztotlig, xfecolagg, rtrn)
             DO_3D( 0, 0, 0, 0, 1, jpkm1)
                zfel1 = MAX( 0., tr(ji,jj,jk,jpfer,Kbb) - zFe3(ji,jj,jk) )
                zfecoll(ji,jj,jk) = 0.5 * zfel1 * MAX(0., ztotlig(ji,jj,jk) - xfecolagg(ji,jj,jk) ) &
                   &              / ( ztotlig(ji,jj,jk) + rtrn ) 
             END_3D
+            !$OMP END PARALLEL DO
          ELSE
+            !$OMP PARALLEL DO &
+            !$OMP PRIVATE(ji, jj, jk, zfel1) &
+            !$OMP SHARED(tr, jpfer, Kbb, zFe3, zfecoll)
             DO_3D( 0, 0, 0, 0, 1, jpkm1)
                zfel1 = MAX( 0., tr(ji,jj,jk,jpfer,Kbb) - zFe3(ji,jj,jk) )
                zfecoll(ji,jj,jk) = 0.5 * zfel1
             END_3D
+            !$OMP END PARALLEL DO
          ENDIF
       ENDIF
-
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, zhplus, fe3sol, zprecip, zprecipno3, zlam1a, &
+                    zaggdfea, zdust, zxlam, ztrc, zlam1b, zscave, zaggdfeb, &
+                    xcoagfe, zscav3d, zcoll3d, zfeprecip) &
+      !$OMP SHARED(tr, jpfer, Kbb, zFe3, fesol, rtrn, hi, kfep, nitrfac, &
+                   xstep, xpow, xlamdust, tmask, ln_p2z, rday, scaveff, &
+                   l_dia_fechem, xlam1, xdiss, tr)
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
          ! Scavenging rate of iron. This scavenging rate depends on the load of particles of sea water. 
          ! This parameterization assumes a simple second order kinetics (k[Particles][Fe]).
@@ -241,12 +276,17 @@ CONTAINS
          ENDIF
          !
       END_3D
+      !$OMP END PARALLEL DO
       !
       !  Define the bioavailable fraction of iron
       !  ----------------------------------------
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk) &
+      !$OMP SHARED(tr, jpfer, Kbb, biron)
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
          biron(ji,jj,jk) = tr(ji,jj,jk,jpfer,Kbb) 
       END_3D
+      !$OMP END PARALLEL DO
       !
       !  Output of some diagnostics variables
       !     ---------------------------------
@@ -255,42 +295,70 @@ CONTAINS
         zrfact2 = 1.e3 * rfact2r  ! conversion from mol/L/timestep into mol/m3/s
         ALLOCATE( zw3d(GLOBAL_2D_ARRAY,jpk) )  ;  zw3d(:,:,:) = 0._wp
         ! Fe3+
+        !$OMP PARALLEL DO &
+        !$OMP PRIVATE(ji, jj, jkR) &
+        !$OMP SHARED(zFe3, tmask, zw3d)
         DO_3D( 0, 0, 0, 0, 1, jpk)
            zw3d(ji,jj,jkR) = zFe3(ji,jj,jk) * tmask(ji,jj,jk)
         END_3D
+        !$OMP END PARALLEL DO
         CALL iom_put( "Fe3", zw3d )
         !  FeL1
+        !$OMP PARALLEL DO &
+        !$OMP PRIVATE(ji, jj, jkR) &
+        !$OMP SHARED(tr, zFe3, tmask, zw3d)
         DO_3D( 0, 0, 0, 0, 1, jpk)
           zw3d(ji,jj,jkR) = MAX( 0., tr(ji,jj,jk,jpfer,Kbb) - zFe3(ji,jj,jk) ) &
                   &        * tmask(ji,jj,jk)
         END_3D
+        !$OMP END PARALLEL DO
         CALL iom_put( "FeL1", zw3d )
         ! TL1 = Totlig
+        !$OMP PARALLEL DO &
+        !$OMP PRIVATE(ji, jj, jkR) &
+        !$OMP SHARED(ztotlig, tmask, zw3d)
         DO_3D( 0, 0, 0, 0, 1, jpk)
            zw3d(ji,jj,jkR) = ztotlig(ji,jj,jk) * tmask(ji,jj,jk)
         END_3D
+        !$OMP END PARALLEL DO
         CALL iom_put( "TL1", zw3d )
         ! Totlig
         CALL iom_put( "Totlig", zw3d )
         ! biron
+        !$OMP PARALLEL DO &
+        !$OMP PRIVATE(ji, jj, jkR) &
+        !$OMP SHARED(biron, tmask, zw3d)
         DO_3D( 0, 0, 0, 0, 1, jpk)
            zw3d(ji,jj,jkR) = biron(ji,jj,jk) * tmask(ji,jj,jk)
         END_3D
+        !$OMP END PARALLEL DO
         CALL iom_put( "Biron", zw3d )
         ! FESCAV
+        !$OMP PARALLEL DO &
+        !$OMP PRIVATE(ji, jj, jkR) &
+        !$OMP SHARED(zscav3d, tmask, zw3d, zrfact2)
         DO_3D( 0, 0, 0, 0, 1, jpk)
            zw3d(ji,jj,jkR) = zscav3d(ji,jj,jk) * tmask(ji,jj,jk) * zrfact2
         END_3D
+        !$OMP END PARALLEL DO
         CALL iom_put( "FESCAV", zw3d )
+        !$OMP PARALLEL DO &
+        !$OMP PRIVATE(ji, jj, jkR) &
+        !$OMP SHARED(zcoll3d, tmask, zw3d, zrfact2)
         DO_3D( 0, 0, 0, 0, 1, jpk)
            zw3d(ji,jj,jkR) = zcoll3d(ji,jj,jk) * tmask(ji,jj,jk) * zrfact2
         END_3D
+        !$OMP END PARALLEL DO
         ! FECOLL
         CALL iom_put( "FECOLL", zw3d )
         ! FEPREC
+        !$OMP PARALLEL DO &
+        !$OMP PRIVATE(ji, jj, jkR) &
+        !$OMP SHARED(zfeprecip, tmask, zw3d, zrfact2)
         DO_3D( 0, 0, 0, 0, 1, jpk)
            zw3d(ji,jj,jkR) = zfeprecip(ji,jj,jk) * tmask(ji,jj,jk) * zrfact2
         END_3D
+        !$OMP END PARALLEL DO
         CALL iom_put( "FEPREC", zw3d )
         !
         DEALLOCATE( zcoll3d, zscav3d, zfeprecip, zw3d )

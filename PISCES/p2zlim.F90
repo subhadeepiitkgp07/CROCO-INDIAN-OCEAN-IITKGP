@@ -8,6 +8,7 @@ MODULE p2zlim
    !! History :   1.0  !  2004     (O. Aumont) Original code
    !!             2.0  !  2007-12  (C. Ethe, G. Madec)  F90
    !!             3.4  !  2011-04  (O. Aumont, C. Ethe) Limitation for iron modelled in quota 
+   !!             3.*  !  2025-01  (S. Maishal, R. Person) Change to High Performance
 #if defined key_pisces
    !!----------------------------------------------------------------------
    !!   p2z_lim        :   Compute the nutrients limitation terms 
@@ -85,6 +86,12 @@ CONTAINS
       !
       sizena(:,:,:) = 1.0
       !
+      !! Parallelize the 3D loop for nutrient limitations using OpenMP
+      !$OMP PARALLEL DO & 
+   PRIVATE(ji, jj, jk, zcoef, zconc0n, zconcnf, zlim1, zlim2, zlim3, &
+           zbiron, ztem1, ztem2, zetot1, zetot2, zsize) &
+   SHARED(tr, sizen, plig, biron, xlimbacl, xlimbac, xnanono3, &
+          xlimphy, xlimnfe, concnno3, concnfer, concbno3, concbfe, xkdoc)
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
 
          ! Tuning of the iron concentration to a minimum level that is set to the detection limit
@@ -129,20 +136,28 @@ CONTAINS
          xlimnfe (ji,jj,jk) = zbiron / ( zbiron + zconcnf )
          xlimphy (ji,jj,jk) = MIN( xlimnfe(ji,jj,jk), xnanono3(ji,jj,jk) )
       END_3D
+      !$OMP END PARALLEL DO
 
       ! Size estimation of phytoplankton based on total biomass
       ! Assumes that larger biomass implies addition of larger cells
       ! ------------------------------------------------------------
+      !$OMP PARALLEL DO & 
+   PRIVATE(ji, jj, jk, zcoef) &
+   SHARED(tr, sizen, sizena, xsizephy, xsizern)
+
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
          zcoef = tr(ji,jj,jk,jpphy,Kbb) - MIN(xsizephy, tr(ji,jj,jk,jpphy,Kbb) )
          sizena(ji,jj,jk) = 1. + ( xsizern -1.0 ) * zcoef / ( xsizephy + zcoef )
       END_3D
-
+      !$OMP END PARALLEL DO
 
       ! Compute the fraction of nanophytoplankton that is made of calcifiers
       ! This is a purely adhoc formulation described in Aumont et al. (2015)
       ! This fraction depends on nutrient limitation, light, temperature
       ! --------------------------------------------------------------------
+      !$OMP PARALLEL DO & 
+   PRIVATE(ji, jj, jk, ztem1, ztem2, zetot1, zetot2) &
+   SHARED(xlimphy, caco3r, ts, etot_ndcy, xfracal, tmask)
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
          ztem1  = MAX( 0., ts(ji,jj,jk,jp_tem,Kmm) + 1.8)
          ztem2  = ts(ji,jj,jk,jp_tem,Kmm) - 10.
@@ -158,6 +173,7 @@ CONTAINS
          xfracal(ji,jj,jk) = MIN( 0.8 , xfracal(ji,jj,jk) )
          xfracal(ji,jj,jk) = MAX( 0.02, xfracal(ji,jj,jk) )
       END_3D
+      !$OMP END PARALLEL DO
       !
       IF( l_dia .AND. knt == nrdttrc ) THEN        ! save output diagnostics
         !

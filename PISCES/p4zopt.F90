@@ -72,11 +72,12 @@ CONTAINS
       INTEGER  ::   irgb
       REAL(wp) ::   zchl
       REAL(wp) ::   zc0 , zc1 , zc2, zc3, z1_dep
-      REAL(wp), DIMENSION(A2D(0)    ) :: zdepmoy, zetmp1, zetmp2
+      REAL(wp), DIMENSION(A2D(0)    ) :: zdepmoy, zetmp1
       REAL(wp), DIMENSION(A2D(0)    ) :: zqsr100, zqsr_corr
       REAL(wp), DIMENSION(A2D(0),jpk) :: ze0, ze1, ze2, ze3
+      REAL(wp), ALLOCATABLE, DIMENSION(:,:,:) :: zpar
       REAL(wp), ALLOCATABLE, DIMENSION(:,:,:) :: zw3d
-      REAL(wp), ALLOCATABLE, DIMENSION(:,:  ) :: zetmp3, zw2d
+      REAL(wp), ALLOCATABLE, DIMENSION(:,:  ) :: zw2d
       !!---------------------------------------------------------------------
       !
       IF( ln_timing )   CALL timing_start('p4z_opt')
@@ -299,69 +300,77 @@ CONTAINS
       ! The euphotic depth can not exceed 300 meters.
       heup   (:,:) = MIN( 300., heup   (:,:) )
       heup_01(:,:) = MIN( 300., heup_01(:,:) )
-
       ! Mean PAR over the mixed layer
       ! -----------------------------
-      zdepmoy(:,:)   = 0.e0
-      zetmp1 (:,:)   = 0.e0
-      zetmp2 (:,:)   = 0.e0
-      !
+      zdepmoy(:,:) = 0.e0             
+      zetmp1 (:,:) = 0.e0
       DO_3D( 0, 0, 0, 0, 1, nksr)
          IF( gdepw(ji,jj,jk+1,Kmm) <= hmld(ji,jj) ) THEN
-            zetmp1 (ji,jj) = zetmp1 (ji,jj) + etot(ji,jj,jk)  * e3t(ji,jj,jk,Kmm) ! Actual PAR for remineralisation
-            zetmp2 (ji,jj) = zetmp2(ji,jj)  + enano(ji,jj,jk) * e3t(ji,jj,jk,Kmm) ! Nanophytoplankton
-            zdepmoy(ji,jj) = zdepmoy(ji,jj) +                   e3t(ji,jj,jk,Kmm)
+            zetmp1 (ji,jj) = zetmp1 (ji,jj) + etot(ji,jj,jk) * e3t(ji,jj,jk,Kmm) ! Actual PAR for remineralisation
+            zdepmoy(ji,jj) = zdepmoy(ji,jj) +                  e3t(ji,jj,jk,Kmm)
          ENDIF
       END_3D
+      !
+      emoy(:,:,:) = etot(:,:,:)       ! remineralisation
+      DO_3D( 0, 0, 0, 0, 1, nksr)
+         IF( gdepw(ji,jj,jk+1,Kmm) <= hmld(ji,jj) ) THEN
+            z1_dep = 1. / ( zdepmoy(ji,jj) + rtrn )
+            emoy (ji,jj,jk) = zetmp1(ji,jj) * z1_dep
+         ENDIF
+      END_3D
+
+      ! Computation of the mean usable light for the different phytoplankton
+      ! groups based on their absorption characteristics.
+      zetmp1(:,:)   = 0.e0
+      DO_3D( 0, 0, 0, 0, 1, nksr)
+         IF( gdepw(ji,jj,jk+1,Kmm) <= MIN(hmld(ji,jj), heup_01(ji,jj)) ) THEN
+            zetmp1(ji,jj) = zetmp1(ji,jj) + enano(ji,jj,jk) * e3t(ji,jj,jk,Kmm) ! Nanophytoplankton
+         ENDIF
+      END_3D
+      enanom(:,:,:) = enano(:,:,:)
       !
       DO_3D( 0, 0, 0, 0, 1, nksr)
          IF( gdepw(ji,jj,jk+1,Kmm) <= hmld(ji,jj) ) THEN
             z1_dep = 1. / ( zdepmoy(ji,jj) + rtrn )
-            emoy (ji,jj,jk)  = zetmp1(ji,jj) * z1_dep
-            enanom(ji,jj,jk) = zetmp2(ji,jj) * z1_dep
-         ELSE
-            emoy  (ji,jj,jk) = etot(ji,jj,jk)
-            enanom(ji,jj,jk) = enano(ji,jj,jk)
+            enanom(ji,jj,jk) = zetmp1(ji,jj) * z1_dep
          ENDIF
       END_3D
       !
       IF( .NOT. ln_p2z ) THEN
          ! Diatoms when using PISCES-operational or PISCES-QUOTA
-         ALLOCATE( zetmp3(A2D(0)) )  ;   zetmp3(:,:) = 0.e0
+         zetmp1(:,:) = 0.e0
          DO_3D( 0, 0, 0, 0, 1, nksr)
-            IF( gdepw(ji,jj,jk+1,Kmm) <= hmld(ji,jj) ) THEN
-               zetmp3(ji,jj) = zetmp3(ji,jj) + ediat(ji,jj,jk) * e3t(ji,jj,jk,Kmm) ! Diatoms
+            IF( gdepw(ji,jj,jk+1,Kmm) <= MIN(hmld(ji,jj), heup_01(ji,jj)) ) THEN
+               zetmp1(ji,jj) = zetmp1(ji,jj) + ediat(ji,jj,jk) * e3t(ji,jj,jk,Kmm) ! Diatoms
             ENDIF
          END_3D
+         !
+         ediatm(:,:,:) = ediat(:,:,:)
          !
          DO_3D( 0, 0, 0, 0, 1, nksr)
             IF( gdepw(ji,jj,jk+1,Kmm) <= hmld(ji,jj) ) THEN
                z1_dep = 1. / ( zdepmoy(ji,jj) + rtrn )
-               ediatm(ji,jj,jk) = zetmp3(ji,jj) * z1_dep
-            ELSE
-               ediatm(ji,jj,jk) = ediat(ji,jj,jk)
+               ediatm(ji,jj,jk) = zetmp1(ji,jj) * z1_dep
             ENDIF
          END_3D
-         DEALLOCATE( zetmp3 )
       ENDIF
       IF( ln_p5z ) THEN
          ! Picophytoplankton when using PISCES-QUOTA
-         ALLOCATE( zetmp3(A2D(0)) )  ;   zetmp3(:,:) = 0.e0
+         zetmp1(:,:) = 0.e0
          DO_3D( 0, 0, 0, 0, 1, nksr)
-            IF( gdepw(ji,jj,jk+1,Kmm) <= hmld(ji,jj) ) THEN
-               zetmp3(ji,jj)  = zetmp3(ji,jj) + epico(ji,jj,jk) * e3t(ji,jj,jk,Kmm)
+            IF( gdepw(ji,jj,jk+1,Kmm) <= MIN(hmld(ji,jj), heup_01(ji,jj)) ) THEN
+               zetmp1(ji,jj)  = zetmp1(ji,jj) + epico(ji,jj,jk) * e3t(ji,jj,jk,Kmm)
             ENDIF
          END_3D
+         !
+         epicom(:,:,:) = epico(:,:,:)
          !
          DO_3D( 0, 0, 0, 0, 1, nksr)
             IF( gdepw(ji,jj,jk+1,Kmm) <= hmld(ji,jj) ) THEN
                z1_dep = 1. / ( zdepmoy(ji,jj) + rtrn )
-               epicom(ji,jj,jk) = zetmp3(ji,jj) * z1_dep
-            ELSE
-               epicom(ji,jj,jk) = epico(ji,jj,jk)
+               epicom(ji,jj,jk) = zetmp1(ji,jj) * z1_dep
             ENDIF
          END_3D
-         DEALLOCATE( zetmp3 )
       ENDIF
       !
       IF( l_dia_par .OR. l_diaadd ) THEN

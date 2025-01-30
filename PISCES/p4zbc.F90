@@ -6,6 +6,7 @@ MODULE p4zbc
    !! TOP :   PISCES surface boundary conditions of external inputs of nutrients
    !!======================================================================
    !! History :   3.5  !  2012-07 (O. Aumont, C. Ethe) Original code
+   !!             3.*  !  2025-02  (S. Maishal, R. Person) MPI and optimization
 #if defined key_pisces
    !!----------------------------------------------------------------------
    !!   p4z_bc        :  Read and interpolate time-varying nutrients fluxes
@@ -121,74 +122,127 @@ CONTAINS
       IF( ln_dust ) THEN
          ALLOCATE( zirondep(A2D(0), jpk) )
          !
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, zxy) &
+      !$OMP SHARED(dust, dustmo, irec1, irec2)
          DO_2D( 0, 0, 0, 0 )
-            dust(ji,jj) = ( 1. - zxy ) * dustmo(ji,jj,irec1) + zxy * dustmo(ji,jj,irec2)
+            dust(ji,jj) = ( 1. - zxy ) * dustmo(ji,jj,irec1) + zxy &
+                           * dustmo(ji,jj,irec2)
          END_2D
+      !$OMP END PARALLEL DO
          !
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, zxy) &
+      !$OMP SHARED(zirondep, ferdepmo, irec1, irec2, rfact2, e3t, Kmm)
          DO_2D( 0, 0, 0, 0 )
             zirondep(ji,jj,1) =  ( ( 1. - zxy ) * ferdepmo(ji,jj,irec1) &
                     &                   + zxy   * ferdepmo(ji,jj,irec2) ) &
                &                   * rfact2 / e3t(ji,jj,1,Kmm) 
          END_2D
+      !$OMP END PARALLEL DO
          !                                              ! Iron solubilization of particles in the water column
          !                                              ! dust in kg/m2/s ---> 1/55.85 to put in mol/Fe ;  wdust in m/j
          zwdust = 0.03  / ( wdust / rday ) / ( 250. * rday )
+!
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, zwdust, rfact, mfrac, mMass_Fe) &
+      !$OMP SHARED(dust, gdept, Kmm, wdust, zirondep)
          DO_3D( 0, 0, 0, 0, 2, jpk)
             zirondep(ji,jj,jk) = ( dust(ji,jj) * mfrac / mMass_Fe ) * zwdust &
                    &        * rfact * EXP( -gdept(ji,jj,jk,Kmm) /( 250. * wdust ) )
          END_3D
+      !$OMP END PARALLEL DO
          !                                              ! Iron solubilization of particles in the water column
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk) &
+      !$OMP SHARED(tr, zirondep, jpfer, Krhs)
          DO_3D( 0, 0, 0, 0, 1, jpk)
             tr(ji,jj,jk,jpfer,Krhs) = tr(ji,jj,jk,jpfer,Krhs) + zirondep(ji,jj,jk)
          END_3D
+      !$OMP END PARALLEL DO
          !
          IF( lk_iomput .AND. l_dia_dust ) THEN
             ALLOCATE( zw3d(GLOBAL_2D_ARRAY,jpk) )   ;   zw3d(:,:,:) = 0._wp
             ALLOCATE( zw2d(GLOBAL_2D_ARRAY) )       ;   zw2d(:,:) = 0._wp
+      !
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jkR) &
+      !$OMP SHARED(zirondep, rfact2r, e3t, tmask, Kmm, zw3d)
             DO_3D( 0, 0, 0, 0, 1, jpk )
                zw3d(ji,jj,jkR) = zirondep(ji,jj,jk) &
                     &         * 1.e+3 * rfact2r * e3t(ji,jj,jk,Kmm) * tmask(ji,jj,jk)
             END_3D
+      !$OMP END PARALLEL DO
+      !
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj) &
+      !$OMP SHARED(dust, wdust, rday, tmask, zw2d)
             CALL iom_put( "Irondep", zw3d )  ! surface downward dust depo of iron
             !
             DO_2D( 0, 0, 0, 0 )
                zw2d(ji,jj) = dust(ji,jj) / ( wdust * rday ) * tmask(ji,jj,1) ! dust concentration at surface
             END_2D
+      !$OMP END PARALLEL DO
+      !
             CALL iom_put( "pdust", zw2d ) ! dust concentration at surface
             DEALLOCATE( zw2d, zw3d )
             !
          ENDIF
 #if defined key_trc_diaadd
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk) &
+      !$OMP SHARED(zirondep, tmask, trc3d, jp_irondep)
          DO_3D( 0, 0, 0, 0, 1, jpk )
             trc3d(ji,jj,jkR,jp_irondep)  = zirondep(ji,jj,jk) * 1.e+3 * tmask(ji,jj,jk)
          END_3D
+      !$OMP END PARALLEL DO
 # endif
          DEALLOCATE( zirondep )
          !                                              
 #if ! defined key_pisces_npzd
          ! Atmospheric input of PO4 and Si dissolves in the water column
          ALLOCATE( zpo4dep(A2D(0)), zsildep(A2D(0)) )
+      !
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, ztra) &
+      !$OMP SHARED(zxy, po4depmo, e3t, tr, zpo4dep, rfact2, &
+                   irec1, irec2, Kmm, jppo4, Krhs)
          DO_2D( 0, 0, 0, 0 )
             zpo4dep(ji,jj) = ( 1. - zxy ) * po4depmo(ji,jj,irec1) &
                &                  + zxy   * po4depmo(ji,jj,irec2)
             ztra   = zpo4dep(ji,jj) * rfact2 / e3t(ji,jj,1,Kmm)
             tr(ji,jj,1,jppo4,Krhs) = tr(ji,jj,1,jppo4,Krhs) + ztra
          END_2D
-         !
+      !$OMP END PARALLEL DO
+      !
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, ztra) &
+      !$OMP SHARED(zxy, sildepmo, e3t, tr, zsildep, rfact2, &
+                   irec1, irec2, Kmm, jpsil, Krhs)
          DO_2D( 0, 0, 0, 0 )
             zsildep(ji,jj) = ( 1. - zxy ) * sildepmo(ji,jj,irec1) &
                &                  + zxy   * sildepmo(ji,jj,irec2)
             ztra   = zsildep(ji,jj) * rfact2 / e3t(ji,jj,1,Kmm)
             tr(ji,jj,1,jpsil,Krhs) = tr(ji,jj,1,jpsil,Krhs) + ztra
          END_2D
+      !$OMP END PARALLEL DO
+      !
 #if defined key_trc_diaadd
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, zfact) &
+      !$OMP SHARED(tmask, zsildep, zpo4dep, po4r, trc2d, &
+                   jp_sildep, jp_po4dep)
          DO_2D( 0, 0, 0, 0 )
             zfact = 1.e+3 * tmask(ji,jj,1) 
             trc2d(ji,jj,jp_sildep) = zsildep(ji,jj) * zfact        ! Si surface deposition
             trc2d(ji,jj,jp_po4dep) = zpo4dep(ji,jj) * zfact * po4r ! PO4 surface deposition
          END_2D
+      !$OMP END PARALLEL DO
 # endif
-
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, zdust) &
+      !$OMP SHARED(dust, zwdust, rfact2, gdept, wdust, tr, mMass_P, &
+                   mMass_Si, jp_po4, jp_sil, Krhs)
          DO_3D( 0, 0, 0, 0, 2, jpk )
             zdust = dust(ji,jj) * zwdust * rfact2 &
                &     * EXP( -gdept(ji,jj,jk,Kmm) /( 250. * wdust ) )
@@ -197,18 +251,26 @@ CONTAINS
             tr(ji,jj,jk,jpsil,Krhs) = tr(ji,jj,jk,jpsil,Krhs) &
                     &                 + zdust * 0.269 / mMass_Si
          END_3D
+      !$OMP END PARALLEL DO
          !
          IF( lk_iomput .AND. l_dia_dust ) THEN
             !
             ALLOCATE( zw2d(GLOBAL_2D_ARRAY) )   ;   zw2d(:,:) = 0.
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj) &
+      !$OMP SHARED(zpo4dep, po4r, tmask, zw2d)
             DO_2D( 0, 0, 0, 0 )
                zw2d(ji,jj) = zpo4dep(ji,jj) * 1.e+3 * po4r * tmask(ji,jj,1)        ! Si surface deposition
             END_2D
+      !$OMP END PARALLEL DO
             CALL iom_put( "Po4dep", zw2d ) ! PO4 concentration at surface
-
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj) &
+      !$OMP SHARED(zsildep, tmask, zw2d)
             DO_2D( 0, 0, 0, 0 )
                zw2d(ji,jj) = zsildep(ji,jj) * 1.e+3 * tmask(ji,jj,1)        ! Si surface deposition
             END_2D
+      !$OMP END PARALLEL DO
             CALL iom_put( "Sildep", zw2d ) ! Si concentration at surface
             DEALLOCATE( zw2d )
          ENDIF
@@ -221,6 +283,9 @@ CONTAINS
       IF( ln_ndepo ) THEN
          ALLOCATE( zno3dep(A2D(0)) )
          !
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, ztra) &
+      !$OMP SHARED(zxy, no3depmo, rfact2, e3t, tr, rno3)
          DO_2D( 0, 0, 0, 0 )
             zno3dep(ji,jj) = ( 1. - zxy ) * no3depmo(ji,jj,irec1) &
                &                  + zxy   * no3depmo(ji,jj,irec2)
@@ -228,25 +293,37 @@ CONTAINS
             tr(ji,jj,1,jpno3,Krhs) = tr(ji,jj,1,jpno3,Krhs) + ztra
             tr(ji,jj,1,jptal,Krhs) = tr(ji,jj,1,jptal,Krhs) - rno3 * ztra
          END_2D
+      !$OMP END PARALLEL DO
          !
          IF( lk_iomput .AND. l_dia_ndep ) THEN
              ALLOCATE( zw2d(GLOBAL_2D_ARRAY) )   ;   zw2d(:,:) = 0.
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj) &
+      !$OMP SHARED(zno3dep, rno3, tmask, zw2d)
              DO_2D( 0, 0, 0, 0 )
                 zw2d(ji,jj) = zno3dep(ji,jj) * 1.e+3 * rno3 * tmask(ji,jj,1)
              END_2D
+      !$OMP END PARALLEL DO
              CALL iom_put( "No3dep", zw2d )
              DEALLOCATE( zw2d )
          ENDIF
 #if defined key_trc_diaadd
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj) &
+      !$OMP SHARED(zno3dep, rno3, tmask, trc2d)
          DO_2D( 0, 0, 0, 0 )
             trc2d(ji,jj,jp_no3dep )  = zno3dep(ji,jj) * 1.e+3 * rno3 * tmask(ji,jj,1)
          END_2D
+      !$OMP END PARALLEL DO
 # endif
          DEALLOCATE( zno3dep )
 
 #if ! defined key_pisces_npzd
          ALLOCATE( znh4dep(A2D(0)) )
          !
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, ztra) &
+      !$OMP SHARED(znh4dep, nh4depmo, zxy, rfact2, e3t, tr, rno3)
          DO_2D( 0, 0, 0, 0 )
             znh4dep(ji,jj) = ( 1. - zxy ) * nh4depmo(ji,jj,irec1) &
                 &                 + zxy   * nh4depmo(ji,jj,irec2)
@@ -254,19 +331,28 @@ CONTAINS
             tr(ji,jj,1,jpnh4,Krhs) = tr(ji,jj,1,jpnh4,Krhs) + ztra 
             tr(ji,jj,1,jptal,Krhs) = tr(ji,jj,1,jptal,Krhs) + rno3 * ztra
          END_2D
+      !$OMP END PARALLEL DO
          !
          IF( lk_iomput .AND. l_dia_ndep ) THEN
              ALLOCATE( zw2d(GLOBAL_2D_ARRAY) )   ;   zw2d(:,:) = 0.
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj) &
+      !$OMP SHARED(znh4dep, rno3, tmask, zw2d)
              DO_2D( 0, 0, 0, 0 )
                 zw2d(ji,jj) = znh4dep(ji,jj) * 1.e+3 * rno3 * tmask(ji,jj,1)
              END_2D
+      !$OMP END PARALLEL DO
              CALL iom_put( "Nh4dep", zw2d )
              DEALLOCATE( zw2d )
          ENDIF
 #if defined key_trc_diaadd
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj) &
+      !$OMP SHARED(znh4dep, rno3, tmask, trc2d, jp_nh4dep)
          DO_2D( 0, 0, 0, 0 )
             trc2d(ji,jj,jp_nh4dep ) = znh4dep(ji,jj) * 1.e+3 * rno3 * tmask(ji,jj,1)
          END_2D
+      !$OMP END PARALLEL DO
 # endif
          DEALLOCATE( znh4dep )
 # endif
@@ -274,23 +360,35 @@ CONTAINS
       ! Add the external input of iron from sediment mobilization
       ! ------------------------------------------------------
       IF( ln_ironsed ) THEN
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk) &
+      !$OMP SHARED(tr, jpfer, Krhs, ironsed, rfact2)
          DO_3D( 0, 0, 0, 0, 1, jpk )
            tr(ji,jj,jk,jpfer,Krhs) = tr(ji,jj,jk,jpfer,Krhs) &
                &                   + ironsed(ji,jj,jk) * rfact2
          END_3D
+      !$OMP END PARALLEL DO
          !
          IF( lk_iomput .AND. l_dia_iron ) THEN
             ALLOCATE( zw3d(GLOBAL_2D_ARRAY,jpk) )   ;   zw3d(:,:,:) = 0.
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk) &
+      !$OMP SHARED(zw3d, ironsed, tmask)
             DO_3D( 0, 0, 0, 0, 1, jpk )
                zw3d(ji,jj,jk) = ironsed(ji,jj,jk) * 1.e+3 * tmask(ji,jj,jk)
             END_3D
+      !$OMP END PARALLEL DO
             CALL iom_put( "Ironsed", zw3d )  ! iron inputs from sediments
             DEALLOCATE( zw3d )
          ENDIF
 #if defined key_trc_diaadd
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk) &
+      !$OMP SHARED(trc3d, ironsed, tmask)
          DO_3D( 0, 0, 0, 0, 1, jpk )
             trc3d(ji,jj,jkR,jp_ironsed ) = ironsed(ji,jj,jk) * 1e+3 * tmask(ji,jj,jk)  ! iron from  sediment
          END_3D
+      !$OMP END PARALLEL DO
 #endif
       ENDIF
 
@@ -376,7 +474,9 @@ CONTAINS
          DO_2D( 0, 0, 0, 0 )
             zcmask(ji,jj,jpk) = 1
          END_2D
-
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, zmaskt) &
+      !$OMP SHARED(tmask_i, zcmask)
          DO_3D( 0, 0, 0, 0, 1, jpk )
             IF( tmask_i(ji,jj) /= 0. ) THEN
                zmaskt = tmask_i(ji+1,jj) * tmask_i(ji-1,jj  ) * tmask_i(ji,jj+1)    &
@@ -384,6 +484,7 @@ CONTAINS
                IF( zmaskt == 0. )   zcmask(ji,jj,jk ) = 0.1
             ENDIF
          END_3D
+      !$OMP END PARALLEL DO
          !
          DO_3D( 0, 0, 0, 0, 1, jpk )
             zexpide   = MIN( 8.,( gdept(ji,jj,jk,Kmm) / 500. )**(-1.5) )
@@ -393,9 +494,13 @@ CONTAINS
          ! Coastal supply of iron
          ! -------------------------
          ironsed(:,:,jpk) = 0.
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk) &
+      !$OMP SHARED(sedfeinput, zcmask, e3t, rday, ironsed)
          DO_3D( 0, 0, 0, 0, 1, jpk )
             ironsed(ji,jj,jk) = sedfeinput * zcmask(ji,jj,jk) / ( e3t(ji,jj,jk,Kmm) * rday )
          END_3D
+      !$OMP END PARALLEL DO
          DEALLOCATE( zcmask)
       ENDIF
       !
@@ -415,6 +520,7 @@ CONTAINS
 ! bug if compilation with gfortran
 !         ierr =nf_inq_var (ncid, varid, varname, vartype, nvdims,  vdims,  nvatts) 
          ierr =nf_inq_varnatts (ncid, varid, nvatts) 
+!        sm -need to check again ..... (1./365.25)
          year2daydta = year2day
          DO ji = 1, nvatts
             ierr = nf_inq_attname (ncid, varid, ji, attname)
@@ -464,6 +570,9 @@ CONTAINS
 #else
          &                   'TRCINI_PISCES -- Read dust deposition '
 #endif
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(irec, jj, ji) &
+      !$OMP SHARED(dustmp, dustmo, nrec_dust, LOCALMM, LOCALLM)
          DO irec = 1, nrec_dust
             DO jj = 1, LOCALMM
                DO ji = 1, LOCALLM
@@ -471,6 +580,7 @@ CONTAINS
                ENDDO
             ENDDO
          ENDDO
+      !$OMP END PARALLEL DO
          !
          ierr = nf_inq_varid (ncid,"dustfer",varid)
          IF (ierr .NE. nf_noerr .AND. lwp ) THEN
@@ -490,6 +600,9 @@ CONTAINS
 #else
          &                   'TRCINI_PISCES -- Read iron deposition '
 #endif
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(irec, jj, ji) &
+      !$OMP SHARED(dustmp, ferdepmo, nrec_dust, LOCALMM, LOCALLM, mfrac, mMass_Fe)
          DO irec = 1, nrec_dust
             DO jj = 1, LOCALMM
                DO ji = 1, LOCALLM
@@ -497,6 +610,7 @@ CONTAINS
                ENDDO
             ENDDO
          ENDDO
+      !$OMP END PARALLEL DO
          !
 #if ! defined key_pisces_npzd
          ALLOCATE( sildepmo(GLOBAL_2D_ARRAY,nrec_dust), po4depmo(GLOBAL_2D_ARRAY,nrec_dust) )
@@ -519,6 +633,9 @@ CONTAINS
 #else
          &                   'TRCINI_PISCES -- Read phosphorus deposition '
 #endif
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(irec, jj, ji) &
+      !$OMP SHARED(dustmp, po4depmo, nrec_dust, LOCALMM, LOCALLM, mMass_P, po4r)
          DO irec = 1, nrec_dust
             DO jj = 1, LOCALMM
                DO ji = 1, LOCALLM
@@ -526,6 +643,7 @@ CONTAINS
                ENDDO
             ENDDO
          ENDDO
+      !$OMP END PARALLEL DO
          !
          ierr = nf_inq_varid (ncid,"dustsi",varid)
          IF (ierr .NE. nf_noerr .AND. lwp ) THEN
@@ -545,6 +663,9 @@ CONTAINS
 #else
          &                   'TRCINI_PISCES -- Read silicate deposition '
 #endif
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(irec, jj, ji) &
+      !$OMP SHARED(dustmp, sildepmo, nrec_dust, LOCALMM, LOCALLM, mMass_Si)
          DO irec = 1, nrec_dust
             DO jj = 1, LOCALMM
                DO ji = 1, LOCALLM
@@ -552,6 +673,7 @@ CONTAINS
                ENDDO
             ENDDO
          ENDDO
+      !$OMP END PARALLEL DO
          !
 #endif
          ierr = nf_close(ncid)
@@ -571,7 +693,7 @@ CONTAINS
          IF (ierr .NE. nf_noerr .AND. lwp) THEN
             WRITE(numout,4) bioname
          ENDIF
-         ierr = nf_inq_dimid(ncid,"ndepo_time",dimid)
+         ierr = nf_inq_dimid(ncid,"ndep_time",dimid)
          ierr = nf_inq_dimlen(ncid,dimid,nrec_ndep)
          ALLOCATE( dustmp(GLOBAL_2D_ARRAY,nrec_ndep) )
 #if ! defined key_pisces_npzd
@@ -595,7 +717,9 @@ CONTAINS
 #else
          &                   'TRCINI_PISCES -- Read Nitrate deposition '
 #endif
-
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(irec, jj, ji) &
+      !$OMP SHARED(dustmp, no3depmo, nrec_ndep, LOCALMM, LOCALLM, rno3, mMass_N)
          DO irec = 1, nrec_ndep
             DO jj = 1, LOCALMM
                DO ji = 1, LOCALLM
@@ -603,6 +727,7 @@ CONTAINS
                END DO
             END DO
          END DO
+      !$OMP END PARALLEL DO
          !
          ALLOCATE( nh4depmo(GLOBAL_2D_ARRAY,nrec_ndep) )
          ierr = nf_inq_varid (ncid,"nhxndepo",varid)
@@ -623,7 +748,9 @@ CONTAINS
 #else
          &                   'TRCINI_PISCES -- Read Ammoniun deposition '
 #endif
-
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(irec, jj, ji) &
+      !$OMP SHARED(dustmp, nh4depmo, nrec_ndep, LOCALMM, LOCALLM, rno3, mMass_N)
          DO irec = 1, nrec_ndep
             DO jj= 1, LOCALMM
                DO ji =1, LOCALLM
@@ -631,6 +758,7 @@ CONTAINS
                END DO
             END DO
          END DO
+      !$OMP END PARALLEL DO
          !
 #else         
          ALLOCATE( no3depmo(GLOBAL_2D_ARRAY,nrec_ndep) )
@@ -653,7 +781,9 @@ CONTAINS
 #else
          &                   'TRCINI_PISCES -- Read Nitrate deposition '
 #endif
-
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(irec, jj, ji) &
+      !$OMP SHARED(dustmp, no3depmo, nrec_ndep, LOCALMM, LOCALLM, rno3, mMass_N)
          DO irec = 1, nrec_ndep
             DO jj = 1, LOCALMM
                DO ji = 1, LOCALLM
@@ -661,6 +791,7 @@ CONTAINS
                END DO
             END DO
          END DO
+      !$OMP END PARALLEL DO
          !
 #endif
          ierr = nf_close(ncid)

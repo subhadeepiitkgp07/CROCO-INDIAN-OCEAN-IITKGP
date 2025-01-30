@@ -112,10 +112,10 @@ CONTAINS
       DO_3D( 0, 0, 0, 0, 1, jpkm1)
          zdep = MAX( hmld(ji,jj), heup_01(ji,jj), gdept(ji,jj,1,Kmm) )
          IF ( gdept(ji,jj,jk,Kmm) <= zdep ) THEN
-            zdepbac(ji,jj,jk) = 0.6 * ( tr(ji,jj,jk,jpzoo,Kbb) * 1.0E6 )**0.6 * 1.E-6
+            zdepbac(ji,jj,jk) = 0.6 * ( MAX(0.0, tr(ji,jj,jk,jpzoo,Kbb) ) * 1.0E6 )**0.6 * 1.E-6
             ztempbac(ji,jj)   = zdepbac(ji,jj,jk)
          ELSE
-            zdepmin = zdep / gdept(ji,jj,jk,Kmm)
+            zdepmin = MIN( 1., zdep / gdept(ji,jj,jk,Kmm) )
             zdepbac(ji,jj,jk) = zdepmin**0.683 * ztempbac(ji,jj)
          ENDIF
       END_3D
@@ -142,7 +142,7 @@ CONTAINS
          ! Ammonification in waters depleted in O2 and NO3 based on 
          ! other redox processes
          ! --------------------------------------------------------
-         zoxyremc = MAX(0., zammonic - denitr(ji,jj,jk) )
+         zoxyremc          = MAX(0., zammonic - denitr(ji,jj,jk) )
 
          ! Update of the the trends arrays
          tr(ji,jj,jk,jpno3,Krhs) = tr(ji,jj,jk,jpno3,Krhs) - denitr (ji,jj,jk) * rdenit

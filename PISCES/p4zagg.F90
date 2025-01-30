@@ -11,6 +11,7 @@ MODULE p4zagg
    !!             3.4  !  2011-06  (O. Aumont, C. Ethe) Change aggregation formula
    !!             3.5  !  2012-07  (O. Aumont) Introduce potential time-splitting
    !!             3.6  !  2015-05  (O. Aumont) PISCES quota
+   !!             3.*  !  2025-02  (S. Maishal, R. Person) MPI and optimization
    !!----------------------------------------------------------------------
 #if defined key_pisces
    !!----------------------------------------------------------------------
@@ -73,6 +74,10 @@ CONTAINS
       ! PISCES part
       IF( ln_p4z ) THEN
          !
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, zfact, zagg1, zagg2, zagg3, zagg4, &
+                        zagg, zaggfe, zaggdoc, zaggdoc2, zaggdoc3) &
+      !$OMP SHARED(xstep, xdiss, tr, tmask, rtrn, conspoc, prodgoc)
          DO_3D( 0, 0, 0, 0, 1, jpkm1 )
             !
             zfact = xstep * xdiss(ji,jj,jk)
@@ -123,9 +128,16 @@ CONTAINS
             prodgoc(ji,jj,jk) = prodgoc(ji,jj,jk) + zagg + zaggdoc2
             !
          END_3D
+      !$OMP END PARALLEL DO
       ELSE    ! ln_p5z
         ! PISCES-QUOTA part
         !
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, zaggtmp, zfact, zaggpoc1, zaggpoc2, &
+                    zaggpoc3, zaggpoc4, zaggpoc, zaggpon, zaggpop, zaggfe, &
+                    zaggdoc, zaggdoc2, zaggdoc3, zaggdon, zaggdon2, zaggdon3, &
+                    zaggdop, zaggdop2, zaggdop3) &
+      !$OMP SHARED(tr, xdiss, xstep, tmask, rtrn, conspoc, prodgoc)
          DO_3D( 0, 0, 0, 0, 1, jpkm1 )
             !
             zfact = xstep * xdiss(ji,jj,jk)
@@ -199,6 +211,8 @@ CONTAINS
             prodgoc(ji,jj,jk) = prodgoc(ji,jj,jk) + zaggpoc + zaggdoc2
             !
          END_3D
+      !$OMP END PARALLEL DO
+
          !
       ENDIF
       !

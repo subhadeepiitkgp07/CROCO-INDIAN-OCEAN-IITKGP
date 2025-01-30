@@ -441,18 +441,14 @@
 !-----------------------------------------------------------------------
 &nampissed     !   Namelist parameters for sediment mobilisation
 !-----------------------------------------------------------------------
-   bureffmin     = 0.013   !: Minimum burial efficiency
-   bureffvar     = 0.053   !: Variable coef. for burial efficiency
-   sedsilfrac    = 0.03    ! percentage of silica loss in the sediments
-   sedcalfrac    = 0.78    ! percentage of calcite loss in the sediments ( 0.78 is for river x1.5 )
-   sedfactcalmin = 0.3     !: Minimum value for dissolving calcite at the bottom
-   sedfactcalvar = 0.7     !: Variable  value for dissolving calcite at the bottom
+    bureffmin  = 0.013     !: Minimum burial efficiency
+    bureffvar  = 0.53      !: Variable coef. for burial efficiency
 /
 !-----------------------------------------------------------------------
 &nampisdmp     !   Damping 
 !-----------------------------------------------------------------------
-   ln_pisdmp     =  .false.     !  Relaxation for some tracers to a mean value
-   ln_pisdmp_alk =  .false.     !  Relaxation for some tracers to a mean value
+   ln_pisdmp    =  .false.     !  Relaxation for some tracers to a mean value
+   nn_pisdmp    =  5475       !  Frequency of Relaxation 
 /
 !-----------------------------------------------------------------------
 &nampisrst     !   parameters for restarting 

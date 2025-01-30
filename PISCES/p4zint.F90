@@ -7,6 +7,7 @@ MODULE p4zint
    !!=========================================================================
    !! History :   1.0  !  2004-03 (O. Aumont) Original code
    !!             2.0  !  2007-12  (C. Ethe, G. Madec)  F90
+   !!             3.*  !  2025-02  (S. Maishal, R. Person) MPI and optimization
 #if defined key_pisces
    !!----------------------------------------------------------------------
    !!   p4z_int        :  interpolation and computation of various accessory fields
@@ -50,22 +51,29 @@ CONTAINS
       !
       ! Computation of phyto and zoo metabolic rate
       ! -------------------------------------------
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk) &
+      !$OMP SHARED(ts, tgfunc, tgfunc2)
       DO_3D( 0, 0, 0, 0, 1, jpk )
          ! Generic temperature dependence (Eppley, 1972)
          tgfunc (ji,jj,jk) = EXP( 0.0631 * ts(ji,jj,jk,jp_tem,Kmm) )
          ! Temperature dependence of mesozooplankton (Buitenhuis et al. (2005))
          tgfunc2(ji,jj,jk) = EXP( 0.0761 * ts(ji,jj,jk,jp_tem,Kmm) )
       END_3D
-
+      !$OMP END PARALLEL DO
 
       IF( ln_p4z .OR. ln_p5z ) THEN
          ! Computation of the silicon dependant half saturation  constant for silica uptake
          ! This is based on an old study by Pondaven et al. (1998)
          ! --------------------------------------------------------------------------------
+         !$OMP PARALLEL DO &
+         !$OMP PRIVATE(ji, jj, zvar) &
+         !$OMP SHARED(tr, xksimax, xksilim)
          DO_2D( 0, 0, 0, 0 )
             zvar = tr(ji,jj,1,jpsil,Kbb) * tr(ji,jj,1,jpsil,Kbb)
             xksimax(ji,jj) = MAX( xksimax(ji,jj), ( 1.+ 7.* zvar / ( xksilim * xksilim + zvar ) ) * 1e-6 )
          END_2D
+         !$OMP END PARALLEL DO
          !
          ! At the end of each year, the half saturation constant for silica is 
          ! updated as this is based on the highest concentration reached over 
@@ -83,17 +91,24 @@ CONTAINS
       zcodel = ASIN(  SIN( zrum * rpi * 2._wp ) * SIN( rad * 23.5_wp )  )
 
       ! day length in hours
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, zargu) &
+      !$OMP SHARED(zcodel, gphit, rad, strn)
       DO_2D( 0, 0, 0, 0 )
          zargu = TAN( zcodel ) * TAN( gphit(ji,jj) * rad )
          zargu = MAX( -1., MIN(  1., zargu ) )
          strn(ji,jj) = MAX( 0.0, 24. - 2. * ACOS( zargu ) / rad / 15. )
       END_2D
+      !$OMP END PARALLEL DO
       !
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk) &
+      !$OMP SHARED(nitrfac, nitrfac2, tr, oxymin, jpoxy, jpno3, Kbb)
       DO_3D( 0, 0, 0, 0, 1, jpkm1 )
         ! denitrification factor computed from O2 levels
          ! This factor diagnoses below which level of O2 denitrification
          ! is active
-         nitrfac(ji,jj,jk) = MAX(  0.e0, 0.4 * ( 6.e-6  - tr(ji,jj,jk,jpoxy,Kbb) )    &
+         nitrfac(ji,jj,jk) = MAX(  0.e0, 0.4 * ( 6.e-6  - tr(ji,jj,jk,jpoxy,Kbb) )  &
             &                                / ( oxymin + tr(ji,jj,jk,jpoxy,Kbb) )  )
          nitrfac(ji,jj,jk) = MIN( 1., nitrfac(ji,jj,jk) )
          !
@@ -104,6 +119,7 @@ CONTAINS
             &                                / ( 1.E-6 + tr(ji,jj,jk,jpno3,Kbb) ) )
          nitrfac2(ji,jj,jk) = MIN( 1., nitrfac2(ji,jj,jk) )
       END_3D
+      !$OMP END PARALLEL DO
       !
       IF( ln_timing )   CALL timing_stop('p4z_int')
       !

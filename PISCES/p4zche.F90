@@ -14,6 +14,7 @@ MODULE p4zche
    !!                  !  2011-02  (J. Simeon, J.Orr ) update O2 solubility constants
    !!             3.6  !  2016-03  (O. Aumont) Change chemistry to MOCSY standards
    !!             4.2  !  2020     (J. ORR )  rhop is replaced by "in situ  density" rhd
+   !!             3.*  !  2025-02  (S. Maishal, R. Person) MPI and optimization
 #if defined key_pisces
    !!----------------------------------------------------------------------
    !!   p4z_che      :  Sea water chemistry computed following OCMIP protocol
@@ -154,8 +155,7 @@ CONTAINS
       !!---------------------------------------------------------------------
       INTEGER, INTENT(in) ::   Kbb, Kmm  ! time level indices
       INTEGER  ::   ji, jj, jk
-      REAL(wp) ::   ztkel, ztkel1, ztkel2, ztkel3
-      REAL(wp) ::   zt, zsal, zlogsal, zsal2, zbuf1, zbuf2
+      REAL(wp) ::   ztkel, ztkel1, zt , zsal  , zsal2 , zbuf1 , zbuf2
       REAL(wp) ::   ztgg , ztgg2, ztgg3 , ztgg4 , ztgg5
       REAL(wp) ::   zpres, ztc  , zcl   , zcpexp, zoxy  , zcpexp2
       REAL(wp) ::   zsqrt, ztr  , zlogt , zcek1, zc1, zplat
@@ -173,35 +173,49 @@ CONTAINS
       ! practical salinity
       ! -------------------------------------------------------------
       IF (neos == -1) THEN
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(jk, ji, jj) &
+      !$OMP SHARED(ts, salinprac, jp_sal, Kmm, jpk)
          DO_3D( 0, 0, 0, 0, 1, jpk )
             salinprac(ji,jj,jk) = ts(ji,jj,jk,jp_sal,Kmm) * 35.0 / 35.16504
          END_3D
+      !$OMP END PARALLEL DO
       ELSE
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(jk, ji, jj) &
+      !$OMP SHARED(ts, salinprac, jp_sal, Kmm, jpk)
          DO_3D( 0, 0, 0, 0, 1, jpk )
             salinprac(ji,jj,jk) = ts(ji,jj,jk,jp_sal,Kmm)
          END_3D
+      !$OMP END PARALLEL DO
       ENDIF
-
       !
       ! Computations of chemical constants require in situ temperature
       ! Here a quite simple formulation is used to convert 
       ! potential temperature to in situ temperature. The errors is less than 
       ! 0.04°C relative to an exact computation
       ! ---------------------------------------------------------------------
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(jk, ji, jj, zpres, za1, za2) &
+      !$OMP SHARED(ts, salinprac, tempis, jp_tem, Kmm, jpk)
       DO_3D( 0, 0, 0, 0, 1, jpk )
          zpres = gdept(ji,jj,jk,Kmm) / 1000.
-         za1 = 0.04 * ( 1.0 + 0.185 * ts(ji,jj,jk,jp_tem,Kmm) + 0.035 * (salinprac(ji,jj,jk) - 35.0) )
+         za1 = 0.04 * ( 1.0 + 0.185 * ts(ji,jj,jk,jp_tem,Kmm) + 0.035 &
+              * (salinprac(ji,jj,jk) - 35.0) )
          za2 = 0.0075 * ( 1.0 - ts(ji,jj,jk,jp_tem,Kmm) / 30.0 )
-         tempis(ji,jj,jk) = ts(ji,jj,jk,jp_tem,Kmm) - za1 * zpres + za2 * zpres**2
+         tempis(ji,jj,jk) = ts(ji,jj,jk,jp_tem,Kmm) - za1 &
+                            * zpres + za2 * zpres**2
       END_3D
+      !$OMP END PARALLEL DO
       !
       ! CHEMICAL CONSTANTS - SURFACE LAYER
       ! ----------------------------------
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, ztkel, zt, zsal, zcek1) &
+      !$OMP SHARED(tempis, salinprac, tmask, chemc)
       DO_2D( 0, 0, 0, 0 )
          !                             ! SET ABSOLUTE TEMPERATURE
          ztkel = tempis(ji,jj,1) + 273.15
-         ztkel2 = ztkel * ztkel
-         ztkel3 = ztkel2 * ztkel 
          zt    = ztkel * 0.01
          zsal  = salinprac(ji,jj,1) + ( 1.- tmask(ji,jj,1) ) * 35.
          !                             ! LN(K0) OF SOLUBILITY OF CO2 (EQ. 12, WEISS, 1980)
@@ -215,18 +229,23 @@ CONTAINS
          !&       + 0.0047036e-4*ztkel**2)
          ! NEW - Coefficients for CO2 soulbility in mol/(L*atm) (Weiss, 1974, Table 1, column 1)
          zcek1 = 9050.69/ztkel - 58.0931 + 22.2940 * LOG(zt) + zsal*(0.027766 - 0.00025888*ztkel    &
-                 &       + 0.0050578e-4*ztkel2)
+                 &       + 0.0050578e-4*ztkel**2)
          !
          ! OLD:  chemc(ji,jj,1) = EXP( zcek1 ) * 1E-6 * rhop(ji,jj,1) / 1000. ! mol/(L atm)
          ! The units indicated in the above line are wrong. They are actually "mol/(L*uatm)"
          ! NEW:
          chemc(ji,jj,1) = EXP( zcek1 ) * 1E-6 ! mol/(L * uatm)
-         chemc(ji,jj,2) = -1636.75 + 12.0408*ztkel - 0.0327957*ztkel2 + 0.0000316528*ztkel3
+         chemc(ji,jj,2) = -1636.75 + 12.0408*ztkel - 0.0327957*ztkel**2 + 0.0000316528*ztkel**3
          chemc(ji,jj,3) = 57.7 - 0.118*ztkel
       END_2D
-
+      !$OMP END PARALLEL DO
       ! OXYGEN SOLUBILITY - DEEP OCEAN
       ! -------------------------------
+      !$OMP PARALLEL DO PRIVATE(ji, jj, jk, ztkel, zsal, &
+                              zsal2, ztgg, ztgg2, ztgg3, &
+                                     ztgg4, ztgg5, zoxy) &
+      !$OMP SHARED(tempis, salinprac, tmask, chemo2, &
+                           o2atm, oxyco, atcox, jpk)
       DO_3D( 0, 0, 0, 0, 1, jpk )
          ztkel = tempis(ji,jj,jk) + 273.15
          zsal  = salinprac(ji,jj,jk) + ( 1.- tmask(ji,jj,jk) ) * 35.
@@ -236,16 +255,32 @@ CONTAINS
          ztgg3 = ztgg2 * ztgg
          ztgg4 = ztgg3 * ztgg
          ztgg5 = ztgg4 * ztgg
-
          zoxy  = 2.00856 + 3.22400 * ztgg + 3.99063 * ztgg2 + 4.80299 * ztgg3    &
          &       + 9.78188e-1 * ztgg4 + 1.71069 * ztgg5 + zsal * ( -6.24097e-3   &
          &       - 6.93498e-3 * ztgg - 6.90358e-3 * ztgg2 - 4.29155e-3 * ztgg3 )   &
          &       - 3.11680e-7 * zsal2
          chemo2(ji,jj,jk) = ( EXP( zoxy ) * o2atm ) * oxyco * atcox     ! mol/(L atm)
       END_3D
-
+      !$OMP END PARALLEL DO
       ! CHEMICAL CONSTANTS - DEEP OCEAN
       ! -------------------------------
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(ji, jj, jk, ztkel, zsal, zsal2, ztgg, ztgg2, &
+                               ztgg3, ztgg4, ztgg5, zoxy, zplat, zc1, zpres, &
+                               zsqrt, zsal15, zlogt, ztr, zis, zis2, zisqrt, &
+                                 ztc, zcl, zst, zft, zcks, zckf, zckb, zck1, &
+                             zck2, zckw, zck1p, zck2p, zck3p, zcksi, zaksp0, &
+                           total2free, free2SWS, total2SWS, SWS2total, zak1, &
+                              zak2, zakb, zakw, zaksp1, zak1p, zak2p, zak3p, &
+                                       zaksi, zcpexp, zcpexp2, zbuf1, zbuf2) &
+      !$OMP SHARED(tempis, salinprac, tmask, chemo2, o2atm, oxyco, atcox, &
+                           gdept, devk10, devk20, devk30, devk40, devk50, &
+                  devk11, devk21, devk31, devk41, devk51, devk12, devk22, &
+                  devk32, devk42, devk52, devk13, devk23, devk33, devk43, &
+                  devk53, devk14, devk24, devk34, devk44, devk54, devk15, &
+                  devk25, devk35, devk45, devk55, devk17, devk27, devk37, &
+                  devk47, devk57, devk18, devk28, devk38, devk48, devk58, &
+                        devk19, devk29, devk39, devk49, devk59)
       DO_3D( 0, 0, 0, 0, 1, jpk )
           ! SET PRESSION ACCORDING TO SAUNDER (1980)
           zplat   = SIN ( ABS(gphit(ji,jj)*3.141592654/180.) )
@@ -256,7 +291,6 @@ CONTAINS
           ! SET ABSOLUTE TEMPERATURE
           ztkel   = tempis(ji,jj,jk) + 273.15
           zsal    = salinprac(ji,jj,jk) + ( 1.-tmask(ji,jj,jk) ) * 35.
-          zsal2   = zsal * zsal
           zsqrt  = SQRT( zsal )
           zsal15  = zsqrt * zsal
           zlogt  = LOG( ztkel )
@@ -265,7 +299,6 @@ CONTAINS
           zis2   = zis * zis
           zisqrt = SQRT( zis )
           ztc     = tempis(ji,jj,jk) + ( 1.- tmask(ji,jj,jk) ) * 20.
-          zlogsal = LOG(1.0 - 0.001005 * zsal)
 
           ! CHLORINITY (WOOSTER ET AL., 1969)
           zcl     = zsal / 1.80655
@@ -281,7 +314,7 @@ CONTAINS
           &         + (-13856. * ztr + 324.57 - 47.986 * zlogt) * zisqrt &
           &         + (35474. * ztr - 771.54 + 114.723 * zlogt) * zis    &
           &         - 2698. * ztr * zis**1.5 + 1776.* ztr * zis2         &
-          &         + zlogsal)
+          &         + LOG(1.0 - 0.001005 * zsal))
 
           ! DISSOCIATION CONSTANT FOR FLUORIDES on free H scale (Dickson and Riley 79)
           zckf    = EXP( 1590.2*ztr - 12.641 + 1.525*zisqrt   &
@@ -290,7 +323,7 @@ CONTAINS
 
           ! DISSOCIATION CONSTANT FOR CARBONATE AND BORATE
           zckb=  (-8966.90 - 2890.53*zsqrt - 77.942*zsal        &
-          &      + 1.728*zsal15 - 0.0996*zsal2)*ztr         &
+          &      + 1.728*zsal15 - 0.0996*zsal*zsal)*ztr         &
           &      + (148.0248 + 137.1942*zsqrt + 1.62142*zsal)   &
           &      + (-24.4344 - 25.085*zsqrt - 0.2474*zsal)      & 
           &      * zlogt + 0.053105*zsqrt*ztkel
@@ -298,9 +331,9 @@ CONTAINS
           ! DISSOCIATION COEFFICIENT FOR CARBONATE ACCORDING TO 
           ! MEHRBACH (1973) REFIT BY MILLERO (1995), seawater scale
           zck1    = -1.0*(3633.86*ztr - 61.2172 + 9.6777*zlogt  &
-             - 0.011555*zsal + 0.0001152*zsal2)
+             - 0.011555*zsal + 0.0001152*zsal*zsal)
           zck2    = -1.0*(471.78*ztr + 25.9290 - 3.16967*zlogt      &
-             - 0.01781*zsal + 0.0001122*zsal2)
+             - 0.01781*zsal + 0.0001122*zsal*zsal)
 
           ! PKW (H2O) (MILLERO, 1995) from composite data
           zckw    = -13847.26 * ztr + 148.9652 - 23.6521 * zlogt + ( 118.67 * ztr    &
@@ -324,7 +357,7 @@ CONTAINS
          &          + (-458.79*ztr + 3.5913) * zisqrt       &
          &          + (188.74*ztr - 1.5998) * zis           &
          &          + (-12.1652*ztr + 0.07871) * zis2       &
-         &          + zlogsal
+         &          + LOG(1.0 - 0.001005*zsal)
 
           ! APPARENT SOLUBILITY PRODUCT K'SP OF CALCITE IN SEAWATER
           !       (S=27-43, T=2-25 DEG C) at pres =0 (atmos. pressure) (MUCCI 1983)
@@ -446,14 +479,20 @@ CONTAINS
           fesol(ji,jj,jk,4) = 10**(-0.2965 - 0.7881*zis**0.5 - 4086.0/ztkel1 )
           fesol(ji,jj,jk,5) = 10**(4.4466 - 0.8505*zis**0.5 - 7980.0/ztkel1 )
       END_3D
+      !$OMP END PARALLEL DO
+
       ! Iron and SIO3 saturation concentration from ...
       IF( .NOT. ln_p2z) THEN
+      !$OMP PARALLEL DO & 
+      !$OMP PRIVATE(ji, jj, jk, ztkel) & 
+      !$OMP SHARED(tempis, sio3eq, jpk)
          DO_3D( 0, 0, 0, 0, 1, jpk )
              ! SET ABSOLUTE TEMPERATURE
              ztkel   = tempis(ji,jj,jk) + 273.15
              sio3eq(ji,jj,jk) = EXP(  LOG( 10.) * ( 6.44 - 968. / ztkel )  ) * 1.e-6
             !
          END_3D
+      !$OMP END PARALLEL DO
       ENDIF
       !
       IF( ln_timing )  CALL timing_stop('p4z_che')
@@ -478,47 +517,54 @@ CONTAINS
       INTEGER  ::   ji, jj, jk
       REAL(wp)  ::  zca1, zba1
       REAL(wp)  ::  zd, zsqrtd, zhmin
-      REAL(wp)  ::  za2, za1, za0, zdens
+      REAL(wp)  ::  za2, za1, za0, zrhd
       REAL(wp)  ::  p_dictot, p_bortot, p_alkcb 
       !!---------------------------------------------------------------------
 
       IF( ln_timing )  CALL timing_start('ahini_for_at')
       !
+      !$OMP PARALLEL DO & 
+      !$OMP PRIVATE(ji, jj, jk, zrhd, p_alkcb, p_dictot, &
+                    p_bortot, zca1, zba1, za2, za1, za0, &
+                    zd, zsqrtd, zhmin) & 
+      !$OMP SHARED(rhd, tr, borat, p_hini, jptal, Kbb, &
+                            jpdic, rtrn, ak13, akb3, ak23)
       DO_3D( 0, 0, 0, 0, 1, jpk )
-         zdens    = rhop(ji,jj,jk) / 1000. 
-         p_alkcb  = tr(ji,jj,jk,jptal,Kbb) / ( zdens + rtrn )
-         p_dictot = tr(ji,jj,jk,jpdic,Kbb) / ( zdens + rtrn )
-         p_bortot = borat(ji,jj,jk)
-         IF (p_alkcb <= 0.) THEN
-            p_hini(ji,jj,jk) = 1.e-3
-         ELSEIF (p_alkcb >= (2.*p_dictot + p_bortot)) THEN
-            p_hini(ji,jj,jk) = 1.e-10_wp
-         ELSE
-            zca1 = p_dictot/( p_alkcb + rtrn )
-            zba1 = p_bortot/ (p_alkcb + rtrn )
-            ! Coefficients of the cubic polynomial
-            za2  = aKb3(ji,jj,jk)*(1. - zba1) + ak13(ji,jj,jk)*(1.-zca1)
-            za1  = ak13(ji,jj,jk)*akb3(ji,jj,jk)*(1. - zba1 - zca1)    &
-              &    + ak13(ji,jj,jk)*ak23(ji,jj,jk)*(1. - (zca1+zca1))
-            za0  = ak13(ji,jj,jk)*ak23(ji,jj,jk)*akb3(ji,jj,jk)*(1. - zba1 - (zca1+zca1))
-                                    ! Taylor expansion around the minimum
-            zd   = za2*za2 - 3.*za1   ! Discriminant of the quadratic equation
-                                    ! for the minimum close to the root
- 
-            IF (zd > 0.) THEN        ! If the discriminant is positive
-               zsqrtd = SQRT(zd)
-               IF(za2 < 0) THEN
-                  zhmin = (-za2 + zsqrtd)/3.
-               ELSE
-                  zhmin = -za1/(za2 + zsqrtd)
-               ENDIF
-               p_hini(ji,jj,jk) = zhmin + SQRT(-(za0 + zhmin*(za1 + zhmin*(za2 + zhmin)))/zsqrtd)
+      zrhd = 1._wp / ( rhd(ji,jj,jk) + 1. )
+      p_alkcb  = tr(ji,jj,jk,jptal,Kbb) * zrhd
+      p_dictot = tr(ji,jj,jk,jpdic,Kbb) * zrhd
+      p_bortot = borat(ji,jj,jk)
+      IF (p_alkcb <= 0.) THEN
+          p_hini(ji,jj,jk) = 1.e-3
+      ELSEIF (p_alkcb >= (2.*p_dictot + p_bortot)) THEN
+          p_hini(ji,jj,jk) = 1.e-10_wp
+      ELSE
+          zca1 = p_dictot/( p_alkcb + rtrn )
+          zba1 = p_bortot/ (p_alkcb + rtrn )
+     ! Coefficients of the cubic polynomial
+          za2 = aKb3(ji,jj,jk)*(1. - zba1) + ak13(ji,jj,jk)*(1.-zca1)
+          za1 = ak13(ji,jj,jk)*akb3(ji,jj,jk)*(1. - zba1 - zca1)    &
+          &     + ak13(ji,jj,jk)*ak23(ji,jj,jk)*(1. - (zca1+zca1))
+          za0 = ak13(ji,jj,jk)*ak23(ji,jj,jk)*akb3(ji,jj,jk)*(1. - zba1 - (zca1+zca1))
+                                  ! Taylor expansion around the minimum
+          zd = za2*za2 - 3.*za1   ! Discriminant of the quadratic equation
+                                  ! for the minimum close to the root
+
+          IF(zd > 0.) THEN        ! If the discriminant is positive
+            zsqrtd = SQRT(zd)
+            IF(za2 < 0) THEN
+              zhmin = (-za2 + zsqrtd)/3.
             ELSE
-               p_hini(ji,jj,jk) = 1.e-7
+              zhmin = -za1/(za2 + zsqrtd)
             ENDIF
+            p_hini(ji,jj,jk) = zhmin + SQRT(-(za0 + zhmin*(za1 + zhmin*(za2 + zhmin)))/zsqrtd)
+          ELSE
+            p_hini(ji,jj,jk) = 1.e-7
+          ENDIF
        !
-         ENDIF
+       ENDIF
       END_3D
+      !$OMP END PARALLEL DO
       !
       IF( ln_timing )  CALL timing_stop('ahini_for_at')
       !
@@ -537,27 +583,36 @@ CONTAINS
    REAL(wp), DIMENSION(A2D(0),jpk), INTENT(OUT) :: p_alknw_sup
    INTEGER,                          INTENT(in)  ::  Kbb      ! time level indices
    INTEGER  ::   ji, jj, jk
-   REAL(wp)  ::  zdens
+   REAL(wp)  ::  zrhd
 
    IF( ln_p2z ) THEN
+      !$OMP PARALLEL DO & 
+      !$OMP PRIVATE(ji, jj, jk, zrhd) & 
+      !$OMP SHARED(rhd, p_alknw_inf, p_alknw_sup, sulfat, &
+                            fluorid, tr, jpdic, Kbb, borat)
       DO_3D( 0, 0, 0, 0, 1, jpk )
-         zdens = rhop(ji,jj,jk) / 1000.
-         p_alknw_inf(ji,jj,jk) =  -2.174E-6 / ( zdens + rtrn ) - sulfat(ji,jj,jk) &
+         zrhd = 1._wp / ( rhd(ji,jj,jk) + 1. )
+         p_alknw_inf(ji,jj,jk) =  -2.174E-6 * zrhd - sulfat(ji,jj,jk) &
          &              - fluorid(ji,jj,jk)
          p_alknw_sup(ji,jj,jk) =   (2. * tr(ji,jj,jk,jpdic,Kbb) + 2. * 2.174E-6    &
-         &               + 90.33E-6 ) / ( zdens + rtrn ) + borat(ji,jj,jk)
+         &               + 90.33E-6 ) * zrhd + borat(ji,jj,jk)
       END_3D
+      !$OMP END PARALLEL DO
    ELSE
+      !$OMP PARALLEL DO & 
+      !$OMP PRIVATE(ji, jj, jk, zrhd) & 
+      !$OMP SHARED(rhd, p_alknw_inf, p_alknw_sup, tr, jppo4, &
+              jpdic, jpsil, Kbb, po4r, sulfat, fluorid, borat)
       DO_3D( 0, 0, 0, 0, 1, jpk )
-         zdens = rhop(ji,jj,jk) / 1000.
-         p_alknw_inf(ji,jj,jk) =  -tr(ji,jj,jk,jppo4,Kbb) &
-                 &             / ( zdens + rtrn ) * po4r - sulfat(ji,jj,jk) &
-                 &              - fluorid(ji,jj,jk)
+         zrhd = 1._wp / ( rhd(ji,jj,jk) + 1. )
+         p_alknw_inf(ji,jj,jk) =  -tr(ji,jj,jk,jppo4,Kbb) * zrhd &
+                                &      * po4r - sulfat(ji,jj,jk) &
+                                &            - fluorid(ji,jj,jk)
          p_alknw_sup(ji,jj,jk) =   (2. * tr(ji,jj,jk,jpdic,Kbb) &
-                 &               + 2. * tr(ji,jj,jk,jppo4,Kbb) * po4r    &
-                 &               + tr(ji,jj,jk,jpsil,Kbb) ) &
-                 &               / ( zdens + rtrn ) + borat(ji,jj,jk)
+         &                + 2. * tr(ji,jj,jk,jppo4,Kbb) * po4r &
+         &               + tr(ji,jj,jk,jpsil,Kbb) ) * zrhd + borat(ji,jj,jk)
       END_3D
+      !$OMP END PARALLEL DO
    ENDIF
 
    END SUBROUTINE anw_infsup
@@ -588,7 +643,7 @@ CONTAINS
    REAL(wp)  ::  znumer_so4, zdnumer_so4, zdenom_so4, zalk_so4, zdalk_so4
    REAL(wp)  ::  znumer_flu, zdnumer_flu, zdenom_flu, zalk_flu, zdalk_flu
    REAL(wp)  ::  zalk_wat, zdalk_wat
-   REAL(wp)  ::  zdens, p_alktot, zdic, zbot, zpt, zst, zft, zsit
+   REAL(wp)  ::  zrhd, p_alktot, zdic, zbot, zpt, zst, zft, zsit
    LOGICAL   ::  l_exitnow
    REAL(wp), PARAMETER :: pz_exp_threshold = 1.0
    REAL(wp), DIMENSION(A2D(0),jpk) :: zalknw_inf, zalknw_sup, rmask, zh_min, zh_max, zeqn_absmin
@@ -599,123 +654,142 @@ CONTAINS
 
    rmask(A2D(0),1:jpk) = tmask(A2D(0),1:jpk)
    zhi(:,:,:)   = 0.
-   !
 
    ! TOTAL H+ scale: conversion factor for Htot = aphscale * Hfree
-   DO_3D( 0, 0, 0, 0, 1, jpk )
-      IF (rmask(ji,jj,jk) == 1.) THEN
-         zdens = rhop(ji,jj,jk) / 1000.
-         p_alktot = tr(ji,jj,jk,jptal,Kbb) / ( zdens + rtrn )
-         aphscale = 1. + sulfat(ji,jj,jk)/aks3(ji,jj,jk)
-         zh_ini = p_hini(ji,jj,jk)
+      !$OMP PARALLEL DO & 
+      !$OMP PRIVATE(ji, jj, jk, zrhd, p_alktot, aphscale, zh_ini, zdelta) & 
+      !$OMP SHARED(rmask, rhd, p_alktot, tr, jptal, Kbb, sulfat, aks3, &
+                   p_hini, zalknw_inf, zalknw_sup, akw3, zh_min, zh_max, zhi)
+      DO_3D( 0, 0, 0, 0, 1, jpk )
+         IF (rmask(ji,jj,jk) == 1.) THEN
+            zrhd = 1._wp / ( rhd(ji,jj,jk) + 1. )
+            p_alktot = tr(ji,jj,jk,jptal,Kbb) * zrhd
+            aphscale = 1. + sulfat(ji,jj,jk)/aks3(ji,jj,jk)
+            zh_ini = p_hini(ji,jj,jk)
 
-         zdelta = (p_alktot-zalknw_inf(ji,jj,jk))**2 + 4.*akw3(ji,jj,jk)/aphscale
+            zdelta = (p_alktot-zalknw_inf(ji,jj,jk))**2 + 4.*akw3(ji,jj,jk)/aphscale
 
-         IF(p_alktot >= zalknw_inf(ji,jj,jk)) THEN
-            zh_min(ji,jj,jk) = 2.*akw3(ji,jj,jk) /( p_alktot-zalknw_inf(ji,jj,jk) + SQRT(zdelta) )
-         ELSE
-            zh_min(ji,jj,jk) = aphscale*(-(p_alktot-zalknw_inf(ji,jj,jk)) + SQRT(zdelta) ) / 2.
+            IF(p_alktot >= zalknw_inf(ji,jj,jk)) THEN
+              zh_min(ji,jj,jk) = 2.*akw3(ji,jj,jk) /( p_alktot-zalknw_inf(ji,jj,jk) + SQRT(zdelta) )
+            ELSE
+              zh_min(ji,jj,jk) = aphscale*(-(p_alktot-zalknw_inf(ji,jj,jk)) + SQRT(zdelta) ) / 2.
+            ENDIF
+
+            zdelta = (p_alktot-zalknw_sup(ji,jj,jk))**2 + 4.*akw3(ji,jj,jk)/aphscale
+
+            IF(p_alktot <= zalknw_sup(ji,jj,jk)) THEN
+              zh_max(ji,jj,jk) = aphscale*(-(p_alktot-zalknw_sup(ji,jj,jk)) + SQRT(zdelta) ) / 2.
+            ELSE
+              zh_max(ji,jj,jk) = 2.*akw3(ji,jj,jk) /( p_alktot-zalknw_sup(ji,jj,jk) + SQRT(zdelta) )
+            ENDIF
+
+            zhi(ji,jj,jk) = MAX(MIN(zh_max(ji,jj,jk), zh_ini), zh_min(ji,jj,jk))
          ENDIF
-
-         zdelta = (p_alktot-zalknw_sup(ji,jj,jk))**2 + 4.*akw3(ji,jj,jk)/aphscale
-
-         IF(p_alktot <= zalknw_sup(ji,jj,jk)) THEN
-            zh_max(ji,jj,jk) = aphscale*(-(p_alktot-zalknw_sup(ji,jj,jk)) + SQRT(zdelta) ) / 2.
-         ELSE
-            zh_max(ji,jj,jk) = 2.*akw3(ji,jj,jk) /( p_alktot-zalknw_sup(ji,jj,jk) + SQRT(zdelta) )
-         ENDIF
-
-         zhi(ji,jj,jk) = MAX(MIN(zh_max(ji,jj,jk), zh_ini), zh_min(ji,jj,jk))
-      ENDIF
-   END_3D
+      END_3D
+      !$OMP END PARALLEL DO
 
    zeqn_absmin(:,:,:) = HUGE(1._wp)
 
-   DO jn = 1, jp_maxniter_atgen 
-      DO_3D( 0, 0, 0, 0, 1, jpk )
+   DO jn = 1, jp_maxniter_atgen
+   !$OMP PARALLEL DO & 
+   DO PRIVATE(ji, jj, jk, zrhd, p_alktot, zdic, zbot, zst, &
+           zft, aphscale, zh, zh_prev, zsit, zpt, znumer_dic, &
+           zdenom_dic, zalk_dic, zdnumer_dic, zdalk_dic, &
+           znumer_bor, zdenom_bor, zalk_bor, zdnumer_bor, zdalk_bor, &
+           znumer_po4, zdenom_po4, zalk_po4, zdnumer_po4, zdalk_po4, &
+           znumer_sil, zdenom_sil, zalk_sil, zdnumer_sil, zdalk_sil, &
+           znumer_so4, zdenom_so4, zalk_so4, zdnumer_so4, zdalk_so4, &
+           znumer_flu, zdenom_flu, zalk_flu, zdnumer_flu, zdalk_flu, &
+           zalk_wat, zdalk_wat, zeqn, zalka, zdeqndh, zh_min, zh_max, &
+           zh_lnfactor, zh_delta, zeqn_absmin, pz_exp_threshold) &
+   !$OMP SHARED(rmask, tr, Kbb, borat, sulfat, fluorid, aks3, zhi, ln_p2z, &
+                po4r, ak13, ak23, akb3, ak1p3, ak2p3, ak3p3, aksi3, aks3, akw3)
+   DO_3D( 0, 0, 0, 0, 1, jpk )
       IF (rmask(ji,jj,jk) == 1.) THEN
-         zdens    = rhop(ji,jj,jk) / 1000.
-         p_alktot = tr(ji,jj,jk,jptal,Kbb) / ( zdens + rtrn )
-         zdic     = tr(ji,jj,jk,jpdic,Kbb) / ( zdens + rtrn )
-         zbot     = borat(ji,jj,jk)
-         zst      = sulfat (ji,jj,jk)
-         zft      = fluorid(ji,jj,jk)
-         aphscale = 1. + sulfat(ji,jj,jk) / aks3(ji,jj,jk)
-         zh       = zhi(ji,jj,jk)
-         zh_prev  = zh
+         zrhd = 1._wp / ( rhd(ji,jj,jk) + 1. )
+         p_alktot = tr(ji,jj,jk,jptal,Kbb) * zrhd
+         zdic  = tr(ji,jj,jk,jpdic,Kbb) * zrhd
+         zbot  = borat(ji,jj,jk)
+         zst = sulfat (ji,jj,jk)
+         zft = fluorid(ji,jj,jk)
+         aphscale = 1. + sulfat(ji,jj,jk)/aks3(ji,jj,jk)
+         zh = zhi(ji,jj,jk)
+         zh_prev = zh
          IF( ln_p2z ) THEN
-            zsit = 90.33E-6 / ( zdens + rtrn )
-            zpt  = 2.174E-6 / ( zdens + rtrn )
+            zsit = 90.33E-6 * zrhd
+            zpt  = 2.174E-6 * zrhd
          ELSE
-            zpt  = tr(ji,jj,jk,jppo4,Kbb) / ( zdens + rtrn ) * po4r
-            zsit = tr(ji,jj,jk,jpsil,Kbb) / ( zdens + rtrn )
+            zpt  = tr(ji,jj,jk,jppo4,Kbb) * zrhd * po4r
+            zsit = tr(ji,jj,jk,jpsil,Kbb) * zrhd
          ENDIF
 
          ! H2CO3 - HCO3 - CO3 : n=2, m=0
-         znumer_dic  = 2.*ak13(ji,jj,jk)*ak23(ji,jj,jk) + zh*ak13(ji,jj,jk)
-         zdenom_dic  = ak13(ji,jj,jk)*ak23(ji,jj,jk) + zh*(ak13(ji,jj,jk) + zh)
-         zalk_dic    = zdic * (znumer_dic/zdenom_dic)
+         znumer_dic = 2.*ak13(ji,jj,jk)*ak23(ji,jj,jk) + zh*ak13(ji,jj,jk)
+         zdenom_dic = ak13(ji,jj,jk)*ak23(ji,jj,jk) + zh*(ak13(ji,jj,jk) + zh)
+         zalk_dic   = zdic * (znumer_dic/zdenom_dic)
          zdnumer_dic = ak13(ji,jj,jk)*ak13(ji,jj,jk)*ak23(ji,jj,jk) + zh     &
-           &           *(4.*ak13(ji,jj,jk)*ak23(ji,jj,jk) + zh*ak13(ji,jj,jk))
+                       *(4.*ak13(ji,jj,jk)*ak23(ji,jj,jk) + zh*ak13(ji,jj,jk))
          zdalk_dic   = -zdic*(zdnumer_dic/zdenom_dic**2)
 
+
          ! B(OH)3 - B(OH)4 : n=1, m=0
-         znumer_bor  = akb3(ji,jj,jk)
-         zdenom_bor  = akb3(ji,jj,jk) + zh
-         zalk_bor    = zbot * (znumer_bor/zdenom_bor)
+         znumer_bor = akb3(ji,jj,jk)
+         zdenom_bor = akb3(ji,jj,jk) + zh
+         zalk_bor   = zbot * (znumer_bor/zdenom_bor)
          zdnumer_bor = akb3(ji,jj,jk)
          zdalk_bor   = -zbot*(zdnumer_bor/zdenom_bor**2)
 
+
          ! H3PO4 - H2PO4 - HPO4 - PO4 : n=3, m=1
-         znumer_po4  = 3.*ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk)*ak3p3(ji,jj,jk)  &
-           &           + zh*(2.*ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk) + zh* ak1p3(ji,jj,jk))
-         zdenom_po4  = ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk)*ak3p3(ji,jj,jk)     &
-           &           + zh*( ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk) + zh*(ak1p3(ji,jj,jk) + zh))
-         zalk_po4    = zpt * (znumer_po4/zdenom_po4 - 1.) ! Zero level of H3PO4 = 1
+         znumer_po4 = 3.*ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk)*ak3p3(ji,jj,jk)  &
+         &            + zh*(2.*ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk) + zh* ak1p3(ji,jj,jk))
+         zdenom_po4 = ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk)*ak3p3(ji,jj,jk)     &
+         &            + zh*( ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk) + zh*(ak1p3(ji,jj,jk) + zh))
+         zalk_po4   = zpt * (znumer_po4/zdenom_po4 - 1.) ! Zero level of H3PO4 = 1
          zdnumer_po4 = ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk)*ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk)*ak3p3(ji,jj,jk)  &
-           &           + zh*(4.*ak1p3(ji,jj,jk)*ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk)*ak3p3(ji,jj,jk)         &
-           &           + zh*(9.*ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk)*ak3p3(ji,jj,jk)                         &
-           &           + ak1p3(ji,jj,jk)*ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk)                                &
-           &           + zh*(4.*ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk) + zh * ak1p3(ji,jj,jk) ) ) )
+         &             + zh*(4.*ak1p3(ji,jj,jk)*ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk)*ak3p3(ji,jj,jk)         &
+         &             + zh*(9.*ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk)*ak3p3(ji,jj,jk)                         &
+         &             + ak1p3(ji,jj,jk)*ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk)                                &
+         &             + zh*(4.*ak1p3(ji,jj,jk)*ak2p3(ji,jj,jk) + zh * ak1p3(ji,jj,jk) ) ) )
          zdalk_po4   = -zpt * (zdnumer_po4/zdenom_po4**2)
 
          ! H4SiO4 - H3SiO4 : n=1, m=0
-         znumer_sil  = aksi3(ji,jj,jk)
-         zdenom_sil  = aksi3(ji,jj,jk) + zh
-         zalk_sil    = zsit * (znumer_sil/zdenom_sil)
+         znumer_sil = aksi3(ji,jj,jk)
+         zdenom_sil = aksi3(ji,jj,jk) + zh
+         zalk_sil   = zsit * (znumer_sil/zdenom_sil)
          zdnumer_sil = aksi3(ji,jj,jk)
          zdalk_sil   = -zsit * (zdnumer_sil/zdenom_sil**2)
 
          ! HSO4 - SO4 : n=1, m=1
-         aphscale    = 1.0 + zst/aks3(ji,jj,jk)
-         znumer_so4  = aks3(ji,jj,jk) * aphscale
-         zdenom_so4  = aks3(ji,jj,jk) * aphscale + zh
-         zalk_so4    = zst * (znumer_so4/zdenom_so4 - 1.)
+         aphscale = 1.0 + zst/aks3(ji,jj,jk)
+         znumer_so4 = aks3(ji,jj,jk) * aphscale
+         zdenom_so4 = aks3(ji,jj,jk) * aphscale + zh
+         zalk_so4   = zst * (znumer_so4/zdenom_so4 - 1.)
          zdnumer_so4 = aks3(ji,jj,jk)
          zdalk_so4   = -zst * (zdnumer_so4/zdenom_so4**2)
 
          ! HF - F : n=1, m=1
-         znumer_flu  =  akf3(ji,jj,jk)
-         zdenom_flu  =  akf3(ji,jj,jk) + zh
-         zalk_flu    =  zft * (znumer_flu/zdenom_flu - 1.)
-         zdnumer_flu =  akf3(ji,jj,jk)
+         znumer_flu =  akf3(ji,jj,jk)
+         zdenom_flu =  akf3(ji,jj,jk) + zh
+         zalk_flu   =  zft * (znumer_flu/zdenom_flu - 1.)
+         zdnumer_flu = akf3(ji,jj,jk)
          zdalk_flu   = -zft * (zdnumer_flu/zdenom_flu**2)
 
          ! H2O - OH
-         aphscale    = 1.0 + zst/aks3(ji,jj,jk)
-         zalk_wat    = akw3(ji,jj,jk)/zh - zh/aphscale
-         zdalk_wat   = -akw3(ji,jj,jk)/zh**2 - 1./aphscale
+         aphscale = 1.0 + zst/aks3(ji,jj,jk)
+         zalk_wat   = akw3(ji,jj,jk)/zh - zh/aphscale
+         zdalk_wat  = -akw3(ji,jj,jk)/zh**2 - 1./aphscale
 
          ! CALCULATE [ALK]([CO3--], [HCO3-])
-         zeqn        = zalk_dic + zalk_bor + zalk_po4 + zalk_sil     &
-           &           + zalk_so4 + zalk_flu                         &
-           &           + zalk_wat - p_alktot
+         zeqn = zalk_dic + zalk_bor + zalk_po4 + zalk_sil   &
+         &      + zalk_so4 + zalk_flu                       &
+         &      + zalk_wat - p_alktot
 
-         zalka       = p_alktot - (zalk_bor + zalk_po4 + zalk_sil    &
-           &           + zalk_so4 + zalk_flu + zalk_wat)
+         zalka = p_alktot - (zalk_bor + zalk_po4 + zalk_sil   &
+         &       + zalk_so4 + zalk_flu + zalk_wat)
 
-         zdeqndh     = zdalk_dic + zdalk_bor + zdalk_po4 + zdalk_sil &
-           &           + zdalk_so4 + zdalk_flu + zdalk_wat
+         zdeqndh = zdalk_dic + zdalk_bor + zdalk_po4 + zdalk_sil &
+         &         + zdalk_so4 + zdalk_flu + zdalk_wat
 
          ! Adapt bracketing interval
          IF(zeqn > 0._wp) THEN
@@ -818,8 +892,10 @@ CONTAINS
 
       ENDIF
    END_3D
+   !$OMP END PARALLEL DO
    END DO
    !
+
       IF( ln_timing )   CALL timing_stop('solve_at_general')
       !
    END SUBROUTINE solve_at_general

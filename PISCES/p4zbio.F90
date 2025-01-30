@@ -9,6 +9,7 @@ MODULE p4zbio
    !! History :   1.0  !  2004     (O. Aumont) Original code
    !!             2.0  !  2007-12  (C. Ethe, G. Madec)  F90
    !!             3.6  ! 2015 (O. Aumont) PISCES-QUOTA
+   !!             3.*  !  2025-02  (S. Maishal, R. Person) MPI and optimization
 #if defined key_pisces
    !!----------------------------------------------------------------------
    !!   p4z_bio        :   computes the interactions between the different
@@ -81,10 +82,13 @@ CONTAINS
       ! OF PHYTOPLANKTON AND DETRITUS. Shear rate is supposed to equal 1
       ! in the mixed layer and 0.1 below the mixed layer.
       xdiss(:,:,:) = 1.
+      !$OMP PARALLEL DO &
+      !$OMP PRIVATE(jk, ji, jj) &
+      !$OMP SHARED(gdepw, hmld, xdiss, jpkm1, Kmm)
       DO_3D( 0, 0, 0, 0, 2, jpkm1 )
          IF( gdepw(ji,jj,jk+1,Kmm) > hmld(ji,jj) )   xdiss(ji,jj,jk) = 0.01
       END_3D
-
+      !$OMP END PARALLEL DO
       ! Initialization of POC/GOC production and consumption
       ! --------------------------------------------------
          prodpoc(:,:,:) = 0.    ;   conspoc(:,:,:) = 0.
